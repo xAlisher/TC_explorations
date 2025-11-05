@@ -1,8 +1,10 @@
-# Keycard NDEF Writer Android App
+# Keycard POC Use Cases Android App
 
 ## Project Overview
 
-This Android application enables secure NFC-based communication with Status Keycard hardware wallets, allowing users to write NDEF (NFC Data Exchange Format) records to their Keycard that are readable by standard NFC readers.
+This Android application demonstrates various Proof of Concept (POC) use cases for the Status Keycard beyond just hardware wallet functionality. The app provides a collection of NFC-based use cases that leverage the Keycard's secure storage and cryptographic capabilities for NDEF (NFC Data Exchange Format) operations.
+
+The app is organized as a list of use cases, each demonstrating a different capability of the Keycard:
 
 ## Accomplishments
 
@@ -37,27 +39,23 @@ This Android application enables secure NFC-based communication with Status Keyc
 - **AndroidX Core KTX**: `1.17.0`
 - **AndroidX Lifecycle**: `2.9.4`
 
-### ✅ User Flow
+## Use Cases
 
-The application implements a complete secure channel workflow:
+### 1. ✅ Write URL to NDEF (Ready)
 
-1. **PIN Entry**
-   - User enters Keycard PIN via secure password dialog
-   - PIN is validated before proceeding
+Write any URL to an NDEF record on the Keycard, making it readable by standard NFC readers.
 
-2. **Card Scanning (PIN Verification)**
+**User Flow:**
+1. Select "Write URL to NDEF" from the main screen
+2. **PIN Entry**: Enter Keycard PIN via secure password dialog
+3. **Card Scanning (PIN Verification)**: Tap Keycard to verify PIN
    - App detects NFC card via ReaderMode
    - Establishes `IsoDep` connection
    - Creates `NFCCardChannel` for APDU communication
-   - Verifies PIN with Keycard (currently using placeholder verification)
-
-3. **Profile ID Entry**
-   - User enters Funding The Commons profile ID
-   - App constructs URL: `https://platform.fundingthecommons.io/profiles/{profileId}`
-   - Creates NDEF URI record from the URL
-
-4. **Card Scanning (NDEF Write)**
-   - App detects NFC card again via ReaderMode
+   - Verifies PIN with Keycard
+4. **URL Entry**: Enter any URL (e.g., `https://example.com`)
+   - App creates NDEF URI record from the URL
+5. **Card Scanning (NDEF Write)**: Tap Keycard again to write NDEF
    - **Secure Channel Establishment**:
      - `CommandSet.select()` - Selects Keycard applet
      - `CommandSet.autoPair(pairingPassword)` - Pairs with card using pairing password
@@ -67,10 +65,23 @@ The application implements a complete secure channel workflow:
    - **NDEF Write**:
      - `CommandSet.setNDEF(ndefBytes)` - Writes NDEF record to card
      - Automatically adds 2-byte length prefix (as per Keycard SDK spec)
+6. **Success Display**: Shows NDEF hex payload (length prefix + NDEF message)
 
-5. **Success Display**
-   - Shows NDEF hex payload (length prefix + NDEF message)
-   - Displays readable URL for verification
+### 2. Write VC to NDEF (Coming Soon)
+
+Write Verifiable Credentials to NDEF records on the Keycard.
+
+### 3. Read VC from NDEF (Coming Soon)
+
+Read and verify Verifiable Credentials from NDEF records on the Keycard.
+
+### 4. Sign data and write to NDEF (Coming Soon)
+
+Sign data using Keycard's private keys and write the signed data to NDEF records.
+
+### 5. Read signed data from NDEF (Coming Soon)
+
+Read and verify signed data from NDEF records on the Keycard.
 
 ### ✅ Technical Implementation Highlights
 
@@ -202,11 +213,14 @@ keycardapp/
 
 ### Usage
 1. Launch the app
-2. Enter your Keycard PIN when prompted
-3. Tap your Keycard to verify PIN
-4. Enter Funding The Commons profile ID
-5. Tap your Keycard again to write NDEF data
-6. Verify the NDEF hex output matches expectations
+2. You'll see a list of use cases on the main screen
+3. Select "Write URL to NDEF" (or any other use case)
+4. For "Write URL to NDEF":
+   - Enter your Keycard PIN when prompted
+   - Tap your Keycard to verify PIN
+   - Enter any URL you want to write
+   - Tap your Keycard again to write NDEF data
+   - Verify the NDEF hex output matches expectations
 
 ## References
 
@@ -218,9 +232,11 @@ keycardapp/
 
 ## Project Status
 
-✅ **Phase 1 Complete**: Secure channel establishment and NDEF writing  
-🚧 **Phase 2 In Progress**: Signing capabilities  
-📋 **Phase 3 Planned**: Verifiable Credentials support
+✅ **Use Case 1 Complete**: Write URL to NDEF  
+📋 **Use Case 2 Planned**: Write VC to NDEF  
+📋 **Use Case 3 Planned**: Read VC from NDEF  
+📋 **Use Case 4 Planned**: Sign data and write to NDEF  
+📋 **Use Case 5 Planned**: Read signed data from NDEF
 
 ---
 

@@ -14,14 +14,18 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -32,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -49,6 +54,14 @@ import im.status.keycard.globalplatform.Crypto
 // CommandSet will be used to talk to the Keycard applet
 // import im.status.keycard.applet.CommandSet
 
+enum class UseCase {
+    WRITE_URL_TO_NDEF,
+    WRITE_VC_TO_NDEF,
+    READ_VC_FROM_NDEF,
+    SIGN_DATA_AND_WRITE_TO_NDEF,
+    READ_SIGNED_DATA_FROM_NDEF
+}
+
 class MainActivity : ComponentActivity() {
 
     // --- 2. DEFINE YOUR CARD'S SECRETS ---
@@ -57,14 +70,15 @@ class MainActivity : ComponentActivity() {
 
     private var nfcAdapter: NfcAdapter? = null
     private lateinit var pendingIntent: PendingIntent
+    private val currentUseCase = mutableStateOf<UseCase?>(null)
     private val nfcStatus = mutableStateOf("Waiting for Keycard tap...")
     private val showPinDialog = mutableStateOf(false)
     private val pinInput = mutableStateOf("")
     private var lastTag: Tag? = null
 	private var pendingPin: String? = null
 
-    private val showProfileDialog = mutableStateOf(false)
-    private val profileIdInput = mutableStateOf("")
+    private val showUrlDialog = mutableStateOf(false)
+    private val urlInput = mutableStateOf("")
     private var pendingUrl: String? = null
     private var pendingNdefMessage: NdefMessage? = null
     private val writtenHex = mutableStateOf<String?>(null)
@@ -106,15 +120,50 @@ class MainActivity : ComponentActivity() {
 		setContent {
             KeycardappTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    Column(modifier = Modifier
-                        .fillMaxSize()
-                        .padding(16.dp)
-                        .verticalScroll(rememberScrollState())
-                    ) {
-                        StatusText(status = nfcStatus.value)
-                        Spacer(modifier = Modifier.height(16.dp))
-                        LogsList(logs = uiLogs.value, writtenHex = writtenHex.value)
+                    when (val useCase = currentUseCase.value) {
+                        null -> UseCaseListScreen(
+                            onUseCaseSelected = { selectedUseCase ->
+                                currentUseCase.value = selectedUseCase
+                                when (selectedUseCase) {
+                                    UseCase.WRITE_URL_TO_NDEF -> {
+                                        nfcStatus.value = "Please enter your PIN"
+                                        showPinDialog.value = true
+                                    }
+                                    UseCase.WRITE_VC_TO_NDEF,
+                                    UseCase.READ_VC_FROM_NDEF,
+                                    UseCase.SIGN_DATA_AND_WRITE_TO_NDEF,
+                                    UseCase.READ_SIGNED_DATA_FROM_NDEF -> {
+                                        nfcStatus.value = "Coming soon..."
+                                    }
+                                }
+                            }
+                        )
+                        UseCase.WRITE_URL_TO_NDEF -> WriteUrlToNdefScreen(
+                            nfcStatus = nfcStatus.value,
+                            logs = uiLogs.value,
+                            writtenHex = writtenHex.value,
+                            onBack = {
+                                currentUseCase.value = null
+                                nfcStatus.value = "Waiting for Keycard tap..."
+                                uiLogs.value = listOf()
+                                writtenHex.value = null
+                                lastVerifiedPin = null
+                            }
+                        )
+                        else -> {
+                            Column(modifier = Modifier
+                                .fillMaxSize()
+                                .padding(16.dp)
+                            ) {
+                                Text("Coming soon: ${useCase.name}", fontSize = 24.sp)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(onClick = { currentUseCase.value = null }) {
+                                    Text("Back")
+                                }
+                            }
+                        }
                     }
+                    
 					if (showPinDialog.value) {
                         PinDialog(
                             pin = pinInput.value,
@@ -126,20 +175,23 @@ class MainActivity : ComponentActivity() {
 								nfcStatus.value = "Now tap your Keycard to verify PIN"
                                 enableReaderMode("verify PIN")
                             },
-                            onDismiss = { showPinDialog.value = false }
+                            onDismiss = { 
+                                showPinDialog.value = false
+                                if (currentUseCase.value == UseCase.WRITE_URL_TO_NDEF) {
+                                    currentUseCase.value = null
+                                }
+                            }
                         )
                     }
 
-                    if (showProfileDialog.value) {
-                        ProfileIdDialog(
-                            profileId = profileIdInput.value,
-                            onProfileIdChange = { profileIdInput.value = it },
+                    if (showUrlDialog.value) {
+                        UrlDialog(
+                            url = urlInput.value,
+                            onUrlChange = { urlInput.value = it },
                             onConfirm = {
-                                val id = profileIdInput.value.trim()
-                                if (id.isNotEmpty()) {
-                                    showProfileDialog.value = false
-                                    val base = "https://platform.fundingthecommons.io/profiles"
-                                    val url = if (base.endsWith("/")) base + id else "$base/$id"
+                                val url = urlInput.value.trim()
+                                if (url.isNotEmpty()) {
+                                    showUrlDialog.value = false
                                     pendingUrl = url
                                     pendingNdefMessage = buildUriNdef(url)
                                     writtenHex.value = null
@@ -148,16 +200,12 @@ class MainActivity : ComponentActivity() {
                                     enableReaderMode("write NDEF")
                                 }
                             },
-                            onDismiss = { showProfileDialog.value = false }
+                            onDismiss = { showUrlDialog.value = false }
                         )
                     }
                 }
             }
         }
-
-		// Start by asking for PIN first
-		nfcStatus.value = "Please enter your PIN"
-		showPinDialog.value = true
     }
 
     override fun onResume() {
@@ -224,9 +272,9 @@ class MainActivity : ComponentActivity() {
                     withContext(Dispatchers.Main) {
                         logUi("verifyPinWithKeycard result: $success")
                         if (success) {
-                            nfcStatus.value = "✅ PIN verified. Enter Funding The Commons profile ID."
+                            nfcStatus.value = "✅ PIN verified. Enter URL to write to NDEF."
                             lastVerifiedPin = pinToVerify
-                            showProfileDialog.value = true
+                            showUrlDialog.value = true
                         } else {
                             nfcStatus.value = "❌ Wrong PIN"
                         }
@@ -287,9 +335,134 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
+fun UseCaseListScreen(onUseCaseSelected: (UseCase) -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "Keycard POC Use Cases",
+            fontSize = 28.sp,
+            modifier = Modifier.padding(bottom = 24.dp)
+        )
+        
+        UseCaseCard(
+            title = "1. Write URL to NDEF",
+            description = "Ready - Write any URL to NDEF record on Keycard",
+            onClick = { onUseCaseSelected(UseCase.WRITE_URL_TO_NDEF) },
+            isReady = true
+        )
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        UseCaseCard(
+            title = "2. Write VC to NDEF",
+            description = "Write Verifiable Credential to NDEF",
+            onClick = { onUseCaseSelected(UseCase.WRITE_VC_TO_NDEF) },
+            isReady = false
+        )
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        UseCaseCard(
+            title = "3. Read VC from NDEF",
+            description = "Read and verify Verifiable Credential from NDEF",
+            onClick = { onUseCaseSelected(UseCase.READ_VC_FROM_NDEF) },
+            isReady = false
+        )
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        UseCaseCard(
+            title = "4. Sign data and write to NDEF",
+            description = "Sign data with Keycard and write signed data to NDEF",
+            onClick = { onUseCaseSelected(UseCase.SIGN_DATA_AND_WRITE_TO_NDEF) },
+            isReady = false
+        )
+        
+        Spacer(modifier = Modifier.height(12.dp))
+        
+        UseCaseCard(
+            title = "5. Read signed data from NDEF",
+            description = "Read and verify signed data from NDEF",
+            onClick = { onUseCaseSelected(UseCase.READ_SIGNED_DATA_FROM_NDEF) },
+            isReady = false
+        )
+    }
+}
+
+@Composable
+fun UseCaseCard(
+    title: String,
+    description: String,
+    onClick: () -> Unit,
+    isReady: Boolean
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp)
+        ) {
+            Text(
+                text = title,
+                fontSize = 18.sp,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = description,
+                fontSize = 14.sp,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            if (isReady) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "✓ Ready",
+                    fontSize = 12.sp,
+                    color = Color(0xFF4CAF50)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun WriteUrlToNdefScreen(
+    nfcStatus: String,
+    logs: List<String>,
+    writtenHex: String?,
+    onBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Button(onClick = onBack) {
+            Text("← Back to Use Cases")
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        StatusText(status = nfcStatus)
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        LogsList(logs = logs, writtenHex = writtenHex)
+    }
+}
+
+@Composable
 fun StatusText(status: String, modifier: Modifier = Modifier) {
     Box(
-        modifier = modifier.fillMaxSize(),
+        modifier = modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center
     ) {
         Text(
@@ -344,26 +517,26 @@ fun PinDialog(
 }
 
 @Composable
-fun ProfileIdDialog(
-    profileId: String,
-    onProfileIdChange: (String) -> Unit,
+fun UrlDialog(
+    url: String,
+    onUrlChange: (String) -> Unit,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = "Funding The Commons ID") },
+        title = { Text(text = "Enter URL") },
         text = {
             OutlinedTextField(
-                value = profileId,
-                onValueChange = onProfileIdChange,
-                label = { Text("Profile ID (e.g. cmesaj...j14)") },
+                value = url,
+                onValueChange = onUrlChange,
+                label = { Text("URL (e.g. https://example.com)") },
                 singleLine = true,
                 modifier = Modifier.padding(top = 8.dp)
             )
         },
         confirmButton = {
-            Button(onClick = onConfirm) { Text("Save") }
+            Button(onClick = onConfirm) { Text("Write") }
         },
         dismissButton = {
             Button(onClick = onDismiss) { Text("Cancel") }
