@@ -70,23 +70,21 @@ import im.status.keycard.globalplatform.Crypto
 // NFC Manager
 import com.example.keycardapp.data.nfc.NfcManager
 
-// Keycard Repository
-import com.example.keycardapp.domain.repository.KeycardRepository
-import com.example.keycardapp.data.repository.KeycardRepositoryImpl
 
-// Use Cases
-import com.example.keycardapp.domain.usecase.VerifyPinUseCase
-import com.example.keycardapp.domain.usecase.WriteUrlUseCase
-import com.example.keycardapp.domain.usecase.WriteVcUseCase
-import com.example.keycardapp.domain.usecase.ValidateVcUseCase
+// Domain Models
+import com.example.keycardapp.domain.model.UseCase
 
-enum class UseCase {
-    WRITE_URL_TO_NDEF,
-    WRITE_VC_TO_NDEF,
-    READ_VC_FROM_NDEF,
-    SIGN_DATA_AND_WRITE_TO_NDEF,
-    READ_SIGNED_DATA_FROM_NDEF
-}
+// ViewModels
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import com.example.keycardapp.viewmodel.UseCaseViewModel
+import com.example.keycardapp.viewmodel.WriteUrlViewModel
+import com.example.keycardapp.viewmodel.WriteVcViewModel
+import com.example.keycardapp.viewmodel.ViewModelFactory
 
 class MainActivity : ComponentActivity() {
 
@@ -97,50 +95,8 @@ class MainActivity : ComponentActivity() {
     // NFC Manager - handles all NFC operations
     private lateinit var nfcManager: NfcManager
     
-    // Keycard Repository - handles all Keycard operations
-    private lateinit var keycardRepository: KeycardRepository
-    
-    // Use Cases - business logic orchestration
-    private lateinit var verifyPinUseCase: VerifyPinUseCase
-    private lateinit var writeUrlUseCase: WriteUrlUseCase
-    private lateinit var writeVcUseCase: WriteVcUseCase
-    private lateinit var validateVcUseCase: ValidateVcUseCase
-    
-    private val currentUseCase = mutableStateOf<UseCase?>(null)
-    private val nfcStatus = mutableStateOf("Waiting for Keycard tap...")
-    private val showPinDialog = mutableStateOf(false)
-    private val pinInput = mutableStateOf("")
-    private var lastTag: Tag? = null
-	private var pendingPin: String? = null
-
-    private val showUrlDialog = mutableStateOf(false)
-    private val urlInput = mutableStateOf("")
-    private var pendingUrl: String? = null
-    private val writtenHex = mutableStateOf<String?>(null)
-    private val uiLogs = mutableStateOf(listOf<String>())
-    private var lastVerifiedPin: String? = null
-    
-    // VC writing state
-    private val vcStatus = mutableStateOf("")
-    private val vcLogs = mutableStateOf(listOf<String>())
-    private val vcWrittenHex = mutableStateOf<String?>(null)
-    private val showQrScanner = mutableStateOf(false)
-    private val vcJwtInput = mutableStateOf("")
-    private val validatingVc = mutableStateOf(false)
-    private val vcValidationError = mutableStateOf<String?>(null)
-    private var pendingVcJwt: String? = null
-    private var vcWriteRetryCount = 0
-    private val MAX_RETRIES = 3
-    
-
-    // --- 3. CREATE A COROUTINE SCOPE ---
-    // This lets us run background tasks easily
-    private val activityScope = CoroutineScope(Dispatchers.Main)
-
-    private fun logUi(msg: String) {
-        Log.d("UI", msg)
-        uiLogs.value = uiLogs.value + msg
-    }
+    // ViewModel Factory
+    private lateinit var viewModelFactory: ViewModelFactory
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -151,71 +107,62 @@ class MainActivity : ComponentActivity() {
         // Initialize NFC Manager
         nfcManager = NfcManager(this)
         if (!nfcManager.initialize()) {
-            nfcStatus.value = "NFC is not available on this device."
+            Log.w("MainActivity", "NFC is not available on this device.")
         }
         
-        // Initialize Keycard Repository
-        keycardRepository = KeycardRepositoryImpl()
-        
-        // Initialize Use Cases
-        verifyPinUseCase = VerifyPinUseCase(keycardRepository)
-        writeUrlUseCase = WriteUrlUseCase(keycardRepository)
-        validateVcUseCase = ValidateVcUseCase()
-        writeVcUseCase = WriteVcUseCase(keycardRepository, validateVcUseCase)
+        // Initialize ViewModel Factory
+        viewModelFactory = ViewModelFactory(pairingPassword)
 
 		setContent {
+            val useCaseViewModel: UseCaseViewModel = viewModel(
+                factory = viewModelFactory
+            )
+            
+            val currentUseCase by useCaseViewModel.currentUseCase.collectAsState()
+            val writeUrlState by useCaseViewModel.writeUrlViewModel.state.collectAsState()
+            val writeVcState by useCaseViewModel.writeVcViewModel.state.collectAsState()
+            
             KeycardappTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-                    when (val useCase = currentUseCase.value) {
+                    when (currentUseCase) {
                         null -> UseCaseListScreen(
                             onUseCaseSelected = { selectedUseCase ->
-                                currentUseCase.value = selectedUseCase
+                                useCaseViewModel.navigateToUseCase(selectedUseCase)
                                 when (selectedUseCase) {
-                                    UseCase.WRITE_URL_TO_NDEF -> {
-                                        nfcStatus.value = "Please enter your PIN"
-                                        showPinDialog.value = true
-                                    }
-                                    UseCase.WRITE_VC_TO_NDEF -> {
-                                        vcStatus.value = "Please enter your PIN"
-                                        showPinDialog.value = true
-                                    }
                                     UseCase.READ_VC_FROM_NDEF,
                                     UseCase.SIGN_DATA_AND_WRITE_TO_NDEF,
                                     UseCase.READ_SIGNED_DATA_FROM_NDEF -> {
-                                        nfcStatus.value = "Coming soon..."
+                                        // Coming soon
                                     }
+                                    else -> {}
                                 }
                             }
                         )
                         UseCase.WRITE_URL_TO_NDEF -> WriteUrlToNdefScreen(
-                            nfcStatus = nfcStatus.value,
-                            logs = uiLogs.value,
-                            writtenHex = writtenHex.value,
+                            nfcStatus = writeUrlState.status,
+                            logs = writeUrlState.logs,
+                            writtenHex = writeUrlState.writtenHex,
                             onBack = {
-                                currentUseCase.value = null
-                                nfcStatus.value = "Waiting for Keycard tap..."
-                                uiLogs.value = listOf()
-                                writtenHex.value = null
-                                lastVerifiedPin = null
+                                useCaseViewModel.navigateBack()
+                            },
+                            onTagDiscovered = { tag ->
+                                handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
                             }
                         )
                         UseCase.WRITE_VC_TO_NDEF -> WriteVcToNdefScreen(
-                            vcStatus = vcStatus.value,
-                            logs = vcLogs.value,
-                            writtenHex = vcWrittenHex.value,
-                            validatingVc = validatingVc.value,
-                            validationError = vcValidationError.value,
+                            vcStatus = writeVcState.status,
+                            logs = writeVcState.logs,
+                            writtenHex = writeVcState.writtenHex,
+                            validatingVc = writeVcState.validatingVc,
+                            validationError = writeVcState.validationError,
                             onBack = {
-                                currentUseCase.value = null
-                                vcStatus.value = ""
-                                vcLogs.value = listOf()
-                                vcWrittenHex.value = null
-                                pendingVcJwt = null
-                                vcWriteRetryCount = 0
-                                lastVerifiedPin = null
+                                useCaseViewModel.navigateBack()
                             },
                             onScanQr = {
-                                showQrScanner.value = true
+                                useCaseViewModel.writeVcViewModel.showQrScanner()
+                            },
+                            onTagDiscovered = { tag ->
+                                handleTagForWriteVc(tag, useCaseViewModel.writeVcViewModel)
                             }
                         )
                         else -> {
@@ -223,134 +170,104 @@ class MainActivity : ComponentActivity() {
                                 .fillMaxSize()
                                 .padding(16.dp)
                             ) {
-                                Text("Coming soon: ${useCase.name}", fontSize = 24.sp)
+                                Text("Coming soon: ${currentUseCase?.name}", fontSize = 24.sp)
                                 Spacer(modifier = Modifier.height(16.dp))
-                                Button(onClick = { currentUseCase.value = null }) {
+                                Button(onClick = { useCaseViewModel.navigateBack() }) {
                                     Text("Back")
                                 }
                             }
                         }
                     }
                     
-					if (showPinDialog.value) {
+                    // PIN Dialog for Write URL
+                    if (writeUrlState.showPinDialog && currentUseCase == UseCase.WRITE_URL_TO_NDEF) {
                         PinDialog(
-                            pin = pinInput.value,
-                            onPinChange = { pinInput.value = it },
+                            pin = writeUrlState.pinInput,
+                            onPinChange = { useCaseViewModel.writeUrlViewModel.updatePinInput(it) },
                             onConfirm = {
-								showPinDialog.value = false
-								pendingPin = pinInput.value
-								pinInput.value = ""
-								nfcStatus.value = "Now tap your Keycard to verify PIN"
+                                useCaseViewModel.writeUrlViewModel.confirmPin()
                                 enableReaderMode("verify PIN") { tag ->
-                                    handleTag(tag)
+                                    handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
                                 }
                             },
-                            onDismiss = { 
-                                showPinDialog.value = false
-                                if (currentUseCase.value == UseCase.WRITE_URL_TO_NDEF || 
-                                    currentUseCase.value == UseCase.WRITE_VC_TO_NDEF) {
-                                    currentUseCase.value = null
+                            onDismiss = {
+                                useCaseViewModel.writeUrlViewModel.dismissPinDialog()
+                                if (currentUseCase == UseCase.WRITE_URL_TO_NDEF) {
+                                    useCaseViewModel.navigateBack()
                                 }
                             }
                         )
                     }
 
-                    if (showUrlDialog.value) {
+                    // URL Dialog for Write URL
+                    if (writeUrlState.showUrlDialog && currentUseCase == UseCase.WRITE_URL_TO_NDEF) {
                         UrlDialog(
-                            url = urlInput.value,
-                            onUrlChange = { urlInput.value = it },
+                            url = writeUrlState.urlInput,
+                            onUrlChange = { useCaseViewModel.writeUrlViewModel.updateUrlInput(it) },
                             onConfirm = {
-                                val url = urlInput.value.trim()
-                                if (url.isNotEmpty()) {
-                                    showUrlDialog.value = false
-                                    pendingUrl = url
-                                    writtenHex.value = null
-                                    nfcStatus.value = "Searching for the card..."
-                                    logUi("Waiting for card to write URL: $url")
-                                    enableReaderMode("write NDEF") { tag ->
-                                        handleTag(tag)
-                                    }
+                                useCaseViewModel.writeUrlViewModel.confirmUrl()
+                                enableReaderMode("write NDEF") { tag ->
+                                    handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
                                 }
                             },
-                            onDismiss = { showUrlDialog.value = false }
+                            onDismiss = { useCaseViewModel.writeUrlViewModel.dismissUrlDialog() }
                         )
                     }
                     
-                    if (showQrScanner.value && currentUseCase.value == UseCase.WRITE_VC_TO_NDEF) {
-                        QrScannerDialog(
-                            activity = this@MainActivity,
-                            jwtInput = vcJwtInput.value,
-                            onJwtInputChange = { vcJwtInput.value = it },
-                            onScanResult = { qrText ->
-                                showQrScanner.value = false
-                                vcJwtInput.value = ""
-                                handleQrScannedVc(qrText)
+                    // PIN Dialog for Write VC
+                    if (writeVcState.showPinDialog && currentUseCase == UseCase.WRITE_VC_TO_NDEF) {
+                        PinDialog(
+                            pin = writeVcState.pinInput,
+                            onPinChange = { useCaseViewModel.writeVcViewModel.updatePinInput(it) },
+                            onConfirm = {
+                                useCaseViewModel.writeVcViewModel.confirmPin()
+                                enableReaderMode("verify PIN") { tag ->
+                                    handleTagForWriteVc(tag, useCaseViewModel.writeVcViewModel)
+                                }
                             },
-                            onDismiss = { 
-                                showQrScanner.value = false
-                                vcJwtInput.value = ""
+                            onDismiss = {
+                                useCaseViewModel.writeVcViewModel.dismissPinDialog()
+                                if (currentUseCase == UseCase.WRITE_VC_TO_NDEF) {
+                                    useCaseViewModel.navigateBack()
+                                }
                             }
                         )
                     }
                     
-                }
-            }
-        }
-    }
-    
-    private fun handleQrScannedVc(qrText: String) {
-        vcStatus.value = "Validating credential..."
-        validatingVc.value = true
-        vcValidationError.value = null
-        logVc("QR code scanned, validating JWT-VC...")
-        
-        activityScope.launch(Dispatchers.IO) {
-            try {
-                // Use ValidateVcUseCase to validate the credential
-                val validationResult = validateVcUseCase(qrText)
-                
-                withContext(Dispatchers.Main) {
-                    validatingVc.value = false
-                    
-                    if (validationResult.isValid && validationResult.ndefMessage != null) {
-                        pendingVcJwt = qrText
-                        vcWriteRetryCount = 0  // Reset retry count for new write attempt
-                        vcStatus.value = "✅ Credential validated. Tap your Keycard to write..."
-                        logVc("VC validated successfully. Size: ${validationResult.sizeBytes} bytes")
-                        enableReaderMode("write VC NDEF") { tag ->
-                            handleTag(tag)
-                        }
-                    } else {
-                        vcValidationError.value = validationResult.errorMessage ?: "Validation failed"
-                        vcStatus.value = if (validationResult.errorMessage?.contains("Invalid") == true) {
-                            "❌ Invalid credential format"
-                        } else {
-                            "❌ Credential too large"
-                        }
-                        logVc("VC validation failed: ${validationResult.errorMessage}")
+                    // QR Scanner Dialog for Write VC
+                    if (writeVcState.showQrScanner && currentUseCase == UseCase.WRITE_VC_TO_NDEF) {
+                        QrScannerDialog(
+                            activity = this@MainActivity,
+                            jwtInput = writeVcState.jwtInput,
+                            onJwtInputChange = { useCaseViewModel.writeVcViewModel.updateJwtInput(it) },
+                            onScanResult = { qrText ->
+                                useCaseViewModel.writeVcViewModel.handleQrScanned(qrText)
+                            },
+                            onDismiss = { useCaseViewModel.writeVcViewModel.dismissQrScanner() }
+                        )
                     }
-                }
-            } catch (e: Exception) {
-                Log.e("MainActivity", "VC validation failed:", e)
-                withContext(Dispatchers.Main) {
-                    validatingVc.value = false
-                    vcValidationError.value = "Validation Error: ${e.message}"
-                    vcStatus.value = "❌ Validation error"
-                    logVc("VC validation exception: ${e.message}")
+                    
+                    // Enable reader mode when VC is ready for writing
+                    LaunchedEffect(writeVcState.pendingVcJwt, writeVcState.validatingVc) {
+                        if (currentUseCase == UseCase.WRITE_VC_TO_NDEF && 
+                            writeVcState.pendingVcJwt != null && 
+                            !writeVcState.validatingVc) {
+                            enableReaderMode("write VC NDEF") { tag ->
+                                handleTagForWriteVc(tag, useCaseViewModel.writeVcViewModel)
+                            }
+                        }
+                    }
+                    
                 }
             }
         }
     }
     
-    private fun logVc(msg: String) {
-        Log.d("VC", msg)
-        vcLogs.value = vcLogs.value + msg
-    }
 
     override fun onResume() {
         super.onResume()
         nfcManager.enableForegroundDispatch()
-        logUi("Foreground dispatch enabled")
+        Log.d("MainActivity", "Foreground dispatch enabled")
     }
 
     override fun onPause() {
@@ -358,205 +275,75 @@ class MainActivity : ComponentActivity() {
         nfcManager.disableForegroundDispatch()
     }
 
-		override fun onNewIntent(intent: Intent) {
+	override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         Log.d("MainActivity", "New NFC Intent Received!")
-        logUi("NFC intent received")
 
         val tag = nfcManager.handleIntent(intent)
         if (tag != null) {
-            handleTag(tag)
-        } else {
-            logUi("No tag in intent")
+            // Route to ViewModels based on current use case
+            // Note: This requires ViewModels to be accessible, but they're in Compose scope
+            // For now, we'll handle this in the UI composables via onTagDiscovered callbacks
+            // NFC events will be handled through reader mode callbacks
         }
     }
 
     private fun enableReaderMode(reason: String, onTagDiscovered: (Tag) -> Unit) {
         nfcManager.enableReaderMode(reason) { tag ->
-            when (currentUseCase.value) {
-                UseCase.WRITE_VC_TO_NDEF -> logVc("ReaderMode tag discovered ($reason)")
-                else -> logUi("ReaderMode tag discovered ($reason)")
-            }
+            Log.d("MainActivity", "ReaderMode tag discovered ($reason)")
             onTagDiscovered(tag)
         }
-        when (currentUseCase.value) {
-            UseCase.WRITE_VC_TO_NDEF -> logVc("ReaderMode enabled: $reason")
-            else -> logUi("ReaderMode enabled: $reason")
-        }
+        Log.d("MainActivity", "ReaderMode enabled: $reason")
     }
 
     private fun disableReaderMode() {
-        when (currentUseCase.value) {
-            UseCase.WRITE_VC_TO_NDEF -> logVc("ReaderMode disabled")
-            else -> logUi("ReaderMode disabled")
-        }
+        Log.d("MainActivity", "ReaderMode disabled")
         nfcManager.disableReaderMode()
     }
 
-    private fun handleTag(tag: Tag) {
-        lastTag = tag
+    /**
+     * Handle tag for Write URL use case.
+     */
+    private fun handleTagForWriteUrl(tag: Tag, viewModel: WriteUrlViewModel) {
+        val state = viewModel.state.value
         
-        val pinToVerify = pendingPin
-        if (!pinToVerify.isNullOrEmpty()) {
-            logUi("Tag detected for PIN verification")
-            nfcStatus.value = "Verifying PIN..."
-            activityScope.launch(Dispatchers.IO) {
-                try {
-                    logUi("Starting PIN verification")
-                    val result = verifyPinUseCase(tag, pinToVerify)
-                    val success = result.getOrElse { false }
-                    withContext(Dispatchers.Main) {
-                        result.onFailure { error ->
-                            logUi("PIN verification error: ${error.message}")
-                        }
-                        logUi("PIN verification result: $success")
-                        if (success) {
-                            lastVerifiedPin = pinToVerify
-                            when (currentUseCase.value) {
-                                UseCase.WRITE_URL_TO_NDEF -> {
-                                    nfcStatus.value = "✅ PIN verified. Enter URL to write to NDEF."
-                                    showUrlDialog.value = true
-                                }
-                                UseCase.WRITE_VC_TO_NDEF -> {
-                                    vcStatus.value = "✅ PIN verified. Scan QR code to get credential."
-                                    showQrScanner.value = true
-                                }
-                                else -> {
-                                    nfcStatus.value = "✅ PIN verified"
-                                }
-                            }
-                        } else {
-                            when (currentUseCase.value) {
-                                UseCase.WRITE_VC_TO_NDEF -> {
-                                    vcStatus.value = "❌ Wrong PIN"
-                                }
-                                else -> {
-                                    nfcStatus.value = "❌ Wrong PIN"
-                                }
-                            }
-                        }
-                        pendingPin = null
-                        disableReaderMode()
-                    }
-                } catch (e: Exception) {
-                    Log.e("MainActivity", "Keycard operation failed:", e)
-                    withContext(Dispatchers.Main) {
-                        nfcStatus.value = "Error: ${e.message}"
-                        logUi("PIN verification exception: ${e.message}")
-                        disableReaderMode()
-                    }
-                }
-            }
+        // Check if we need to verify PIN
+        if (state.pendingPin != null) {
+            viewModel.verifyPin(tag)
+            disableReaderMode()
             return
         }
-
-        // Handle VC writing
-        val vcJwt = pendingVcJwt
-        if (vcJwt != null && currentUseCase.value == UseCase.WRITE_VC_TO_NDEF) {
-            val pinForWrite = lastVerifiedPin
-            if (pinForWrite.isNullOrEmpty()) {
-                vcStatus.value = "❌ No verified PIN available for secure write"
-                logVc("No verified PIN available")
-                disableReaderMode()
-                return
-            }
-            
-            activityScope.launch(Dispatchers.IO) {
-                withContext(Dispatchers.Main) {
-                    if (vcWriteRetryCount > 0) {
-                        vcStatus.value = "Retrying... (Attempt ${vcWriteRetryCount + 1}/$MAX_RETRIES)"
-                        logVc("Retry attempt ${vcWriteRetryCount + 1}/$MAX_RETRIES")
-                    } else {
-                        vcStatus.value = "Connection established, please don't move the card..."
-                        logVc("Card detected. Preparing to write VC NDEF...")
-                    }
-                }
-
-                // Use WriteVcUseCase to write VC
-                val writeResult = writeVcUseCase(tag, vcJwt, pairingPassword, pinForWrite, vcWriteRetryCount)
-
-                if (!writeResult.success) {
-                    if (writeResult.isTagLost && vcWriteRetryCount < MAX_RETRIES) {
-                        // Tag was lost, retry
-                        vcWriteRetryCount++
-                        withContext(Dispatchers.Main) {
-                            vcStatus.value = "⚠️ Tag lost. Retrying... (Attempt ${vcWriteRetryCount + 1}/$MAX_RETRIES)"
-                            logVc("Tag lost. Retrying (${vcWriteRetryCount}/$MAX_RETRIES)...")
-                            // Keep pendingVcJwt so it can be retried
-                            // Don't disable reader mode, keep listening for the next tap
-                        }
-                        // Don't return, let the reader mode continue listening
-                        return@launch
-                    } else {
-                        // Failed after retries or non-retryable error
-                        withContext(Dispatchers.Main) {
-                            if (writeResult.isTagLost && vcWriteRetryCount >= MAX_RETRIES) {
-                                vcStatus.value = "❌ Failed after $MAX_RETRIES attempts. Please try again."
-                                logVc("Failed after $MAX_RETRIES retry attempts")
-                            } else {
-                                vcStatus.value = "❌ Failed to write VC NDEF"
-                                logVc("Secure write failed: ${writeResult.errorMessage}")
-                            }
-                            Log.e("VC", "Write failed details: ${writeResult.errorMessage}", Throwable())
-                            vcWriteRetryCount = 0
-                            pendingVcJwt = null
-                            disableReaderMode()
-                        }
-                        return@launch
-                    }
-                }
-
-                // Success!
-                withContext(Dispatchers.Main) {
-                    vcWrittenHex.value = writeResult.hexOutput
-                    if (vcWriteRetryCount > 0) {
-                        vcStatus.value = "✅ VC written successfully after ${vcWriteRetryCount + 1} attempts!"
-                        logVc("VC NDEF write success after ${vcWriteRetryCount + 1} attempts. Hex length: ${writeResult.hexOutput?.length ?: 0}")
-                    } else {
-                        vcStatus.value = "✅ VC written successfully!"
-                        logVc("VC NDEF write success. Hex length: ${writeResult.hexOutput?.length ?: 0}")
-                    }
-                    vcWriteRetryCount = 0
-                    pendingVcJwt = null
-                    disableReaderMode()
-                }
-            }
+        
+        // Check if we need to write URL
+        if (state.pendingUrl != null) {
+            viewModel.writeUrl(tag)
+            disableReaderMode()
             return
         }
+    }
 
-        val url = pendingUrl
-        if (url != null && currentUseCase.value == UseCase.WRITE_URL_TO_NDEF) {
-            val pinForWrite = lastVerifiedPin
-            if (pinForWrite.isNullOrEmpty()) {
-                nfcStatus.value = "❌ No verified PIN available for secure write"
-                logUi("No verified PIN available")
+    /**
+     * Handle tag for Write VC use case.
+     */
+    private fun handleTagForWriteVc(tag: Tag, viewModel: WriteVcViewModel) {
+        val state = viewModel.state.value
+        
+        // Check if we need to verify PIN
+        if (state.pendingPin != null) {
+            viewModel.verifyPin(tag)
+            disableReaderMode()
+            return
+        }
+        
+        // Check if we need to write VC
+        if (state.pendingVcJwt != null) {
+            viewModel.writeVc(tag)
+            // Don't disable reader mode if retry might be needed
+            // The ViewModel will handle retry logic
+            if (!viewModel.shouldKeepReaderModeEnabled()) {
                 disableReaderMode()
-                return
             }
-            
-            activityScope.launch(Dispatchers.IO) {
-                withContext(Dispatchers.Main) {
-                    nfcStatus.value = "Connection established, please don't move the card..."
-                    logUi("Card detected. Preparing to write URL to NDEF...")
-                }
-
-                // Use WriteUrlUseCase to write URL
-                val writeResult = writeUrlUseCase(tag, url, pairingPassword, pinForWrite)
-
-                    withContext(Dispatchers.Main) {
-                    if (writeResult.isSuccess) {
-                        writtenHex.value = writeResult.getOrNull()
-                    nfcStatus.value = "✅ NDEF written."
-                        logUi("NDEF write success. Hex length: ${writeResult.getOrNull()?.length ?: 0}")
-                    } else {
-                        val error = writeResult.exceptionOrNull()?.message ?: "Write failed"
-                        nfcStatus.value = "❌ Failed to write NDEF"
-                        logUi("Secure write failed: $error")
-                    }
-                    pendingUrl = null
-                    disableReaderMode()
-                }
-            }
+            return
         }
     }
 }
@@ -664,7 +451,8 @@ fun WriteUrlToNdefScreen(
     nfcStatus: String,
     logs: List<String>,
     writtenHex: String?,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onTagDiscovered: (Tag) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -779,7 +567,8 @@ fun WriteVcToNdefScreen(
     validatingVc: Boolean,
     validationError: String?,
     onBack: () -> Unit,
-    onScanQr: () -> Unit
+    onScanQr: () -> Unit,
+    onTagDiscovered: (Tag) -> Unit
 ) {
     Column(
         modifier = Modifier
