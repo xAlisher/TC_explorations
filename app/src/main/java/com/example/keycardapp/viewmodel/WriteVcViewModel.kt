@@ -82,8 +82,9 @@ class WriteVcViewModel(
     
     /**
      * Verify PIN with Keycard.
+     * @param onComplete Callback to execute after operation completes (e.g., disable reader mode)
      */
-    fun verifyPin(tag: Tag) {
+    fun verifyPin(tag: Tag, onComplete: () -> Unit = {}) {
         val pin = _state.value.pendingPin ?: return
         
         viewModelScope.launch {
@@ -117,6 +118,9 @@ class WriteVcViewModel(
                 addLog("PIN verification exception: ${e.message}")
                 updateStatus("Error: ${e.message}")
                 _state.update { it.copy(pendingPin = null) }
+            } finally {
+                // Execute callback after operation completes
+                onComplete()
             }
         }
     }
@@ -185,12 +189,15 @@ class WriteVcViewModel(
     
     /**
      * Write VC to NDEF on Keycard.
+     * @param onComplete Callback to execute after operation completes (e.g., disable reader mode)
+     *                   Parameter indicates whether reader mode should remain enabled (for retries)
      */
-    fun writeVc(tag: Tag) {
+    fun writeVc(tag: Tag, onComplete: (Boolean) -> Unit = { _ -> }) {
         val jwtVc = _state.value.pendingVcJwt ?: return
         val pin = _state.value.lastVerifiedPin ?: run {
             updateStatus("❌ No verified PIN available for secure write")
             addLog("No verified PIN available")
+            onComplete(false)
             return
         }
         val retryCount = _state.value.writeRetryCount
@@ -208,12 +215,13 @@ class WriteVcViewModel(
             
             if (!writeResult.success) {
                 if (writeResult.isTagLost && retryCount < MAX_RETRIES) {
-                    // Tag was lost, retry
+                    // Tag was lost, retry - keep reader mode enabled
                     _state.update { it.copy(writeRetryCount = retryCount + 1) }
                     updateStatus("⚠️ Tag lost. Retrying... (Attempt ${retryCount + 2}/$MAX_RETRIES)")
                     addLog("Tag lost. Retrying (${retryCount + 1}/$MAX_RETRIES)...")
                     // Keep pendingVcJwt so it can be retried
-                    // Don't return, let the reader mode continue listening
+                    // Reader mode should remain enabled for next tap
+                    onComplete(true) // Keep reader mode enabled
                     return@launch
                 } else {
                     // Failed after retries or non-retryable error
@@ -230,6 +238,7 @@ class WriteVcViewModel(
                             pendingVcJwt = null
                         )
                     }
+                    onComplete(false) // Disable reader mode
                     return@launch
                 }
             }
@@ -250,6 +259,9 @@ class WriteVcViewModel(
                 updateStatus("✅ VC written successfully!")
                 addLog("VC NDEF write success. Hex length: ${writeResult.hexOutput?.length ?: 0}")
             }
+            
+            // Execute callback after operation completes
+            onComplete(false) // Disable reader mode on success
         }
     }
     

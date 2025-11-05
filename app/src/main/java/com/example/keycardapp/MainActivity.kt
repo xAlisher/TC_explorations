@@ -190,7 +190,7 @@ class MainActivity : ComponentActivity() {
                                     handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
                                 }
                             },
-                            onDismiss = {
+                            onDismiss = { 
                                 useCaseViewModel.writeUrlViewModel.dismissPinDialog()
                                 if (currentUseCase == UseCase.WRITE_URL_TO_NDEF) {
                                     useCaseViewModel.navigateBack()
@@ -206,7 +206,7 @@ class MainActivity : ComponentActivity() {
                             onUrlChange = { useCaseViewModel.writeUrlViewModel.updateUrlInput(it) },
                             onConfirm = {
                                 useCaseViewModel.writeUrlViewModel.confirmUrl()
-                                enableReaderMode("write NDEF") { tag ->
+                                    enableReaderMode("write NDEF") { tag ->
                                     handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
                                 }
                             },
@@ -275,7 +275,7 @@ class MainActivity : ComponentActivity() {
         nfcManager.disableForegroundDispatch()
     }
 
-	override fun onNewIntent(intent: Intent) {
+		override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         Log.d("MainActivity", "New NFC Intent Received!")
 
@@ -309,15 +309,21 @@ class MainActivity : ComponentActivity() {
         
         // Check if we need to verify PIN
         if (state.pendingPin != null) {
-            viewModel.verifyPin(tag)
-            disableReaderMode()
+            viewModel.verifyPin(tag) { 
+                // Disable reader mode after operation completes
+                        disableReaderMode()
+                    }
+            // Don't disable reader mode immediately - wait for operation to complete
             return
         }
-        
+
         // Check if we need to write URL
         if (state.pendingUrl != null) {
-            viewModel.writeUrl(tag)
-            disableReaderMode()
+            viewModel.writeUrl(tag) {
+                // Disable reader mode after operation completes
+                            disableReaderMode()
+                        }
+            // Don't disable reader mode immediately - wait for operation to complete
             return
         }
     }
@@ -330,19 +336,23 @@ class MainActivity : ComponentActivity() {
         
         // Check if we need to verify PIN
         if (state.pendingPin != null) {
-            viewModel.verifyPin(tag)
-            disableReaderMode()
+            viewModel.verifyPin(tag) {
+                // Disable reader mode after operation completes
+                disableReaderMode()
+            }
+            // Don't disable reader mode immediately - wait for operation to complete
             return
         }
         
         // Check if we need to write VC
         if (state.pendingVcJwt != null) {
-            viewModel.writeVc(tag)
-            // Don't disable reader mode if retry might be needed
-            // The ViewModel will handle retry logic
-            if (!viewModel.shouldKeepReaderModeEnabled()) {
-                disableReaderMode()
+            viewModel.writeVc(tag) { shouldKeepEnabled ->
+                // Disable reader mode after operation completes, unless retry is needed
+                if (!shouldKeepEnabled) {
+                    disableReaderMode()
+                }
             }
+            // Don't disable reader mode immediately - wait for operation to complete
             return
         }
     }
@@ -519,6 +529,7 @@ fun PinDialog(
                 label = { Text("PIN") },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                 modifier = Modifier.padding(top = 8.dp)
             )
         },

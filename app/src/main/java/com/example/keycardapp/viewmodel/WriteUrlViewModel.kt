@@ -78,8 +78,9 @@ class WriteUrlViewModel(
     
     /**
      * Verify PIN with Keycard.
+     * @param onComplete Callback to execute after operation completes (e.g., disable reader mode)
      */
-    fun verifyPin(tag: Tag) {
+    fun verifyPin(tag: Tag, onComplete: () -> Unit = {}) {
         val pin = _state.value.pendingPin ?: return
         
         viewModelScope.launch {
@@ -113,6 +114,9 @@ class WriteUrlViewModel(
                 addLog("PIN verification exception: ${e.message}")
                 updateStatus("Error: ${e.message}")
                 _state.update { it.copy(pendingPin = null) }
+            } finally {
+                // Execute callback after operation completes (on main thread)
+                onComplete()
             }
         }
     }
@@ -159,12 +163,14 @@ class WriteUrlViewModel(
     
     /**
      * Write URL to NDEF on Keycard.
+     * @param onComplete Callback to execute after operation completes (e.g., disable reader mode)
      */
-    fun writeUrl(tag: Tag) {
+    fun writeUrl(tag: Tag, onComplete: () -> Unit = {}) {
         val url = _state.value.pendingUrl ?: return
         val pin = _state.value.lastVerifiedPin ?: run {
             updateStatus("❌ No verified PIN available for secure write")
             addLog("No verified PIN available")
+            onComplete()
             return
         }
         
@@ -191,6 +197,9 @@ class WriteUrlViewModel(
                 addLog("Secure write failed: $error")
                 _state.update { it.copy(pendingUrl = null) }
             }
+            
+            // Execute callback after operation completes
+            onComplete()
         }
     }
     
