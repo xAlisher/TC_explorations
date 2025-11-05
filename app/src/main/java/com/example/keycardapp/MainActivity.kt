@@ -65,9 +65,7 @@ import im.status.keycard.globalplatform.Crypto
 // CommandSet will be used to talk to the Keycard applet
 // import im.status.keycard.applet.CommandSet
 
-// QR Code and JWT
-import com.nimbusds.jwt.JWTParser
-import java.nio.charset.StandardCharsets
+// QR Code and JWT (now in use cases)
 
 // NFC Manager
 import com.example.keycardapp.data.nfc.NfcManager
@@ -75,6 +73,12 @@ import com.example.keycardapp.data.nfc.NfcManager
 // Keycard Repository
 import com.example.keycardapp.domain.repository.KeycardRepository
 import com.example.keycardapp.data.repository.KeycardRepositoryImpl
+
+// Use Cases
+import com.example.keycardapp.domain.usecase.VerifyPinUseCase
+import com.example.keycardapp.domain.usecase.WriteUrlUseCase
+import com.example.keycardapp.domain.usecase.WriteVcUseCase
+import com.example.keycardapp.domain.usecase.ValidateVcUseCase
 
 enum class UseCase {
     WRITE_URL_TO_NDEF,
@@ -96,6 +100,12 @@ class MainActivity : ComponentActivity() {
     // Keycard Repository - handles all Keycard operations
     private lateinit var keycardRepository: KeycardRepository
     
+    // Use Cases - business logic orchestration
+    private lateinit var verifyPinUseCase: VerifyPinUseCase
+    private lateinit var writeUrlUseCase: WriteUrlUseCase
+    private lateinit var writeVcUseCase: WriteVcUseCase
+    private lateinit var validateVcUseCase: ValidateVcUseCase
+    
     private val currentUseCase = mutableStateOf<UseCase?>(null)
     private val nfcStatus = mutableStateOf("Waiting for Keycard tap...")
     private val showPinDialog = mutableStateOf(false)
@@ -106,7 +116,6 @@ class MainActivity : ComponentActivity() {
     private val showUrlDialog = mutableStateOf(false)
     private val urlInput = mutableStateOf("")
     private var pendingUrl: String? = null
-    private var pendingNdefMessage: NdefMessage? = null
     private val writtenHex = mutableStateOf<String?>(null)
     private val uiLogs = mutableStateOf(listOf<String>())
     private var lastVerifiedPin: String? = null
@@ -120,7 +129,6 @@ class MainActivity : ComponentActivity() {
     private val validatingVc = mutableStateOf(false)
     private val vcValidationError = mutableStateOf<String?>(null)
     private var pendingVcJwt: String? = null
-    private var pendingVcNdefMessage: NdefMessage? = null
     private var vcWriteRetryCount = 0
     private val MAX_RETRIES = 3
     
@@ -148,6 +156,12 @@ class MainActivity : ComponentActivity() {
         
         // Initialize Keycard Repository
         keycardRepository = KeycardRepositoryImpl()
+        
+        // Initialize Use Cases
+        verifyPinUseCase = VerifyPinUseCase(keycardRepository)
+        writeUrlUseCase = WriteUrlUseCase(keycardRepository)
+        validateVcUseCase = ValidateVcUseCase()
+        writeVcUseCase = WriteVcUseCase(keycardRepository, validateVcUseCase)
 
 		setContent {
             KeycardappTheme {
@@ -197,7 +211,6 @@ class MainActivity : ComponentActivity() {
                                 vcLogs.value = listOf()
                                 vcWrittenHex.value = null
                                 pendingVcJwt = null
-                                pendingVcNdefMessage = null
                                 vcWriteRetryCount = 0
                                 lastVerifiedPin = null
                             },
@@ -251,7 +264,6 @@ class MainActivity : ComponentActivity() {
                                 if (url.isNotEmpty()) {
                                     showUrlDialog.value = false
                                     pendingUrl = url
-                                    pendingNdefMessage = buildUriNdef(url)
                                     writtenHex.value = null
                                     nfcStatus.value = "Searching for the card..."
                                     logUi("Waiting for card to write URL: $url")
@@ -294,48 +306,28 @@ class MainActivity : ComponentActivity() {
         
         activityScope.launch(Dispatchers.IO) {
             try {
-                // Validate JWT format
-                val jwt = try {
-                    JWTParser.parse(qrText)
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        validatingVc.value = false
-                        vcValidationError.value = "Invalid Credential Format: Not a valid JWT"
-                        vcStatus.value = "❌ Invalid credential format"
-                        logVc("JWT parsing failed: ${e.message}")
-                    }
-                    return@launch
-                }
-                
-                // Check size (max 1000 bytes for safety)
-                val vcBytes = qrText.toByteArray(StandardCharsets.UTF_8)
-                val MAX_PAYLOAD_SIZE = 1000
-                
-                if (vcBytes.size > MAX_PAYLOAD_SIZE) {
-                    withContext(Dispatchers.Main) {
-                        validatingVc.value = false
-                        val sizeKB = String.format("%.1f", vcBytes.size / 1024.0)
-                        vcValidationError.value = "Credential Too Large: This credential (${sizeKB}KB) is too large for the Keycard (1KB limit). Please contact your issuer for a more compact credential."
-                        vcStatus.value = "❌ Credential too large"
-                        logVc("VC size check failed: ${vcBytes.size} bytes > $MAX_PAYLOAD_SIZE bytes")
-                    }
-                    return@launch
-                }
-                
-                // Create NDEF record with MIME type application/vc+jwt
-                val mimeType = "application/vc+jwt"
-                val ndefRecord = NdefRecord.createMime(mimeType, vcBytes)
-                val ndefMessage = NdefMessage(arrayOf(ndefRecord))
+                // Use ValidateVcUseCase to validate the credential
+                val validationResult = validateVcUseCase(qrText)
                 
                 withContext(Dispatchers.Main) {
                     validatingVc.value = false
-                    pendingVcJwt = qrText
-                    pendingVcNdefMessage = ndefMessage
-                    vcWriteRetryCount = 0  // Reset retry count for new write attempt
-                    vcStatus.value = "✅ Credential validated. Tap your Keycard to write..."
-                    logVc("VC validated successfully. Size: ${vcBytes.size} bytes")
-                    enableReaderMode("write VC NDEF") { tag ->
-                        handleTag(tag)
+                    
+                    if (validationResult.isValid && validationResult.ndefMessage != null) {
+                        pendingVcJwt = qrText
+                        vcWriteRetryCount = 0  // Reset retry count for new write attempt
+                        vcStatus.value = "✅ Credential validated. Tap your Keycard to write..."
+                        logVc("VC validated successfully. Size: ${validationResult.sizeBytes} bytes")
+                        enableReaderMode("write VC NDEF") { tag ->
+                            handleTag(tag)
+                        }
+                    } else {
+                        vcValidationError.value = validationResult.errorMessage ?: "Validation failed"
+                        vcStatus.value = if (validationResult.errorMessage?.contains("Invalid") == true) {
+                            "❌ Invalid credential format"
+                        } else {
+                            "❌ Credential too large"
+                        }
+                        logVc("VC validation failed: ${validationResult.errorMessage}")
                     }
                 }
             } catch (e: Exception) {
@@ -411,7 +403,7 @@ class MainActivity : ComponentActivity() {
             activityScope.launch(Dispatchers.IO) {
                 try {
                     logUi("Starting PIN verification")
-                    val result = keycardRepository.verifyPin(tag, pinToVerify)
+                    val result = verifyPinUseCase(tag, pinToVerify)
                     val success = result.getOrElse { false }
                     withContext(Dispatchers.Main) {
                         result.onFailure { error ->
@@ -459,8 +451,16 @@ class MainActivity : ComponentActivity() {
         }
 
         // Handle VC writing
-        val vcMessage = pendingVcNdefMessage
-        if (vcMessage != null && currentUseCase.value == UseCase.WRITE_VC_TO_NDEF) {
+        val vcJwt = pendingVcJwt
+        if (vcJwt != null && currentUseCase.value == UseCase.WRITE_VC_TO_NDEF) {
+            val pinForWrite = lastVerifiedPin
+            if (pinForWrite.isNullOrEmpty()) {
+                vcStatus.value = "❌ No verified PIN available for secure write"
+                logVc("No verified PIN available")
+                disableReaderMode()
+                return
+            }
+            
             activityScope.launch(Dispatchers.IO) {
                 withContext(Dispatchers.Main) {
                     if (vcWriteRetryCount > 0) {
@@ -472,32 +472,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                val ndefBytes = vcMessage.toByteArray()
-                val pinForWrite = lastVerifiedPin
-                val secureResult = if (!pinForWrite.isNullOrEmpty()) {
-                    val result = keycardRepository.writeNdef(tag, ndefBytes, pairingPassword, pinForWrite)
-                    if (result.isSuccess) {
-                        Pair(true, null)
-                    } else {
-                        Pair(false, result.exceptionOrNull()?.message ?: "Write failed")
-                    }
-                } else Pair(false, "No verified PIN available for secure write")
+                // Use WriteVcUseCase to write VC
+                val writeResult = writeVcUseCase(tag, vcJwt, pairingPassword, pinForWrite, vcWriteRetryCount)
 
-                if (!secureResult.first) {
-                    val reason = secureResult.second ?: "Secure write failed"
-                    val isTagLost = reason.contains("TagLostException", ignoreCase = true) || 
-                                   reason.contains("Tag was lost", ignoreCase = true) ||
-                                   reason.contains("TagLost", ignoreCase = true) ||
-                                   reason.contains("IOException", ignoreCase = true) ||
-                                   reason.contains("connection", ignoreCase = true)
-                    
-                    if (isTagLost && vcWriteRetryCount < MAX_RETRIES) {
+                if (!writeResult.success) {
+                    if (writeResult.isTagLost && vcWriteRetryCount < MAX_RETRIES) {
                         // Tag was lost, retry
                         vcWriteRetryCount++
                         withContext(Dispatchers.Main) {
                             vcStatus.value = "⚠️ Tag lost. Retrying... (Attempt ${vcWriteRetryCount + 1}/$MAX_RETRIES)"
                             logVc("Tag lost. Retrying (${vcWriteRetryCount}/$MAX_RETRIES)...")
-                            // Keep pendingVcNdefMessage so it can be retried
+                            // Keep pendingVcJwt so it can be retried
                             // Don't disable reader mode, keep listening for the next tap
                         }
                         // Don't return, let the reader mode continue listening
@@ -505,16 +490,16 @@ class MainActivity : ComponentActivity() {
                     } else {
                         // Failed after retries or non-retryable error
                         withContext(Dispatchers.Main) {
-                            if (isTagLost && vcWriteRetryCount >= MAX_RETRIES) {
+                            if (writeResult.isTagLost && vcWriteRetryCount >= MAX_RETRIES) {
                                 vcStatus.value = "❌ Failed after $MAX_RETRIES attempts. Please try again."
                                 logVc("Failed after $MAX_RETRIES retry attempts")
                             } else {
                                 vcStatus.value = "❌ Failed to write VC NDEF"
-                                logVc("Secure write failed: $reason")
+                                logVc("Secure write failed: ${writeResult.errorMessage}")
                             }
-                            Log.e("VC", "Write failed details: $reason", Throwable())
+                            Log.e("VC", "Write failed details: ${writeResult.errorMessage}", Throwable())
                             vcWriteRetryCount = 0
-                            pendingVcNdefMessage = null
+                            pendingVcJwt = null
                             disableReaderMode()
                         }
                         return@launch
@@ -523,77 +508,52 @@ class MainActivity : ComponentActivity() {
 
                 // Success!
                 withContext(Dispatchers.Main) {
-                    val lengthPrefix = byteArrayOf(
-                        ((ndefBytes.size shr 8) and 0xFF).toByte(),
-                        (ndefBytes.size and 0xFF).toByte()
-                    )
-                    val fullPayload = lengthPrefix + ndefBytes
-                    val hex = toHex(fullPayload)
-                    vcWrittenHex.value = hex
+                    vcWrittenHex.value = writeResult.hexOutput
                     if (vcWriteRetryCount > 0) {
                         vcStatus.value = "✅ VC written successfully after ${vcWriteRetryCount + 1} attempts!"
-                        logVc("VC NDEF write success after ${vcWriteRetryCount + 1} attempts. Bytes: ${ndefBytes.size}, Hex length: ${hex.length}")
+                        logVc("VC NDEF write success after ${vcWriteRetryCount + 1} attempts. Hex length: ${writeResult.hexOutput?.length ?: 0}")
                     } else {
                         vcStatus.value = "✅ VC written successfully!"
-                        logVc("VC NDEF write success. Bytes: ${ndefBytes.size}, Hex length: ${hex.length}")
+                        logVc("VC NDEF write success. Hex length: ${writeResult.hexOutput?.length ?: 0}")
                     }
                     vcWriteRetryCount = 0
-                    pendingVcNdefMessage = null
+                    pendingVcJwt = null
                     disableReaderMode()
                 }
             }
             return
         }
 
-        val message = pendingNdefMessage
-        if (message != null) {
+        val url = pendingUrl
+        if (url != null && currentUseCase.value == UseCase.WRITE_URL_TO_NDEF) {
+            val pinForWrite = lastVerifiedPin
+            if (pinForWrite.isNullOrEmpty()) {
+                nfcStatus.value = "❌ No verified PIN available for secure write"
+                logUi("No verified PIN available")
+                disableReaderMode()
+                return
+            }
+            
             activityScope.launch(Dispatchers.IO) {
                 withContext(Dispatchers.Main) {
                     nfcStatus.value = "Connection established, please don't move the card..."
-                    logUi("Card detected. Preparing to write NDEF...")
+                    logUi("Card detected. Preparing to write URL to NDEF...")
                 }
 
-                val ndefBytes = message.toByteArray()
-                val pinForWrite = lastVerifiedPin
-                withContext(Dispatchers.Main) {
-                    logUi("Starting secure write: ${ndefBytes.size} bytes, pairing password length: ${pairingPassword.length}")
-                }
-                val secureResult = if (!pinForWrite.isNullOrEmpty()) {
+                // Use WriteUrlUseCase to write URL
+                val writeResult = writeUrlUseCase(tag, url, pairingPassword, pinForWrite)
+
                     withContext(Dispatchers.Main) {
-                        logUi("Attempting to write NDEF via Keycard...")
-                    }
-                    val result = keycardRepository.writeNdef(tag, ndefBytes, pairingPassword, pinForWrite)
-                    if (result.isSuccess) {
-                        Pair(true, null)
-                    } else {
-                        val error = result.exceptionOrNull()?.message ?: "Write failed"
-                        withContext(Dispatchers.Main) {
-                            logUi("Write failed. Error: $error")
-                        }
-                        Pair(false, error)
-                    }
-                } else Pair(false, "No verified PIN available for secure write")
-
-                if (!secureResult.first) {
-                    withContext(Dispatchers.Main) {
-                        nfcStatus.value = "❌ Failed to write NDEF"
-                        val reason = secureResult.second ?: "Secure write failed"
-                        logUi("Secure write failed: $reason")
-                    }
-                    return@launch
-                }
-
-                withContext(Dispatchers.Main) {
-                    val lengthPrefix = byteArrayOf(
-                        ((ndefBytes.size shr 8) and 0xFF).toByte(),
-                        (ndefBytes.size and 0xFF).toByte()
-                    )
-                    val fullPayload = lengthPrefix + ndefBytes
-                    val hex = toHex(fullPayload)
-                    writtenHex.value = hex
+                    if (writeResult.isSuccess) {
+                        writtenHex.value = writeResult.getOrNull()
                     nfcStatus.value = "✅ NDEF written."
-                    logUi("NDEF write success. Bytes: ${ndefBytes.size}, Hex length: ${hex.length}")
-                    pendingNdefMessage = null
+                        logUi("NDEF write success. Hex length: ${writeResult.getOrNull()?.length ?: 0}")
+                    } else {
+                        val error = writeResult.exceptionOrNull()?.message ?: "Write failed"
+                        nfcStatus.value = "❌ Failed to write NDEF"
+                        logUi("Secure write failed: $error")
+                    }
+                    pendingUrl = null
                     disableReaderMode()
                 }
             }
@@ -982,11 +942,8 @@ fun QrScannerDialog(
 
 
 // verifyPinWithKeycard and writeNdefViaKeycard moved to KeycardRepositoryImpl
-
-private fun buildUriNdef(url: String): NdefMessage {
-    val uriRecord = NdefRecord.createUri(url)
-    return NdefMessage(arrayOf(uriRecord))
-}
+// buildUriNdef moved to WriteUrlUseCase
+// toHex moved to WriteUrlUseCase and WriteVcUseCase
 
 private fun writeNdefToTag(tag: Tag, message: NdefMessage): Pair<Boolean, String?> {
     return try {
@@ -1033,12 +990,5 @@ private fun writeNdefToTag(tag: Tag, message: NdefMessage): Pair<Boolean, String
     }
 }
 
-private fun toHex(bytes: ByteArray): String {
-    val sb = StringBuilder(bytes.size * 2)
-    for (b in bytes) {
-        sb.append(String.format("%02x", b))
-    }
-    return sb.toString()
-}
-
 // writeNdefViaKeycard moved to KeycardRepositoryImpl
+// toHex moved to WriteUrlUseCase and WriteVcUseCase
