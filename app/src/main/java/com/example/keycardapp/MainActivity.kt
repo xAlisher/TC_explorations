@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.nfc.Tag
 import android.os.Build
-import android.nfc.tech.IsoDep
 import android.nfc.tech.Ndef
 import android.nfc.tech.NdefFormatable
 import android.nfc.NdefMessage
@@ -62,7 +61,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // Keycard Android transport (from .info references)
-import im.status.keycard.android.NFCCardChannel
 import im.status.keycard.globalplatform.Crypto
 // CommandSet will be used to talk to the Keycard applet
 // import im.status.keycard.applet.CommandSet
@@ -73,6 +71,10 @@ import java.nio.charset.StandardCharsets
 
 // NFC Manager
 import com.example.keycardapp.data.nfc.NfcManager
+
+// Keycard Repository
+import com.example.keycardapp.domain.repository.KeycardRepository
+import com.example.keycardapp.data.repository.KeycardRepositoryImpl
 
 enum class UseCase {
     WRITE_URL_TO_NDEF,
@@ -90,6 +92,9 @@ class MainActivity : ComponentActivity() {
 
     // NFC Manager - handles all NFC operations
     private lateinit var nfcManager: NfcManager
+    
+    // Keycard Repository - handles all Keycard operations
+    private lateinit var keycardRepository: KeycardRepository
     
     private val currentUseCase = mutableStateOf<UseCase?>(null)
     private val nfcStatus = mutableStateOf("Waiting for Keycard tap...")
@@ -140,6 +145,9 @@ class MainActivity : ComponentActivity() {
         if (!nfcManager.initialize()) {
             nfcStatus.value = "NFC is not available on this device."
         }
+        
+        // Initialize Keycard Repository
+        keycardRepository = KeycardRepositoryImpl()
 
 		setContent {
             KeycardappTheme {
@@ -402,10 +410,14 @@ class MainActivity : ComponentActivity() {
             nfcStatus.value = "Verifying PIN..."
             activityScope.launch(Dispatchers.IO) {
                 try {
-                    logUi("Starting verifyPinWithKeycard")
-                    val success = verifyPinWithKeycard(tag, pinToVerify)
+                    logUi("Starting PIN verification")
+                    val result = keycardRepository.verifyPin(tag, pinToVerify)
+                    val success = result.getOrElse { false }
                     withContext(Dispatchers.Main) {
-                        logUi("verifyPinWithKeycard result: $success")
+                        result.onFailure { error ->
+                            logUi("PIN verification error: ${error.message}")
+                        }
+                        logUi("PIN verification result: $success")
                         if (success) {
                             lastVerifiedPin = pinToVerify
                             when (currentUseCase.value) {
@@ -463,7 +475,12 @@ class MainActivity : ComponentActivity() {
                 val ndefBytes = vcMessage.toByteArray()
                 val pinForWrite = lastVerifiedPin
                 val secureResult = if (!pinForWrite.isNullOrEmpty()) {
-                    writeNdefViaKeycard(tag, ndefBytes, pairingPassword, pinForWrite)
+                    val result = keycardRepository.writeNdef(tag, ndefBytes, pairingPassword, pinForWrite)
+                    if (result.isSuccess) {
+                        Pair(true, null)
+                    } else {
+                        Pair(false, result.exceptionOrNull()?.message ?: "Write failed")
+                    }
                 } else Pair(false, "No verified PIN available for secure write")
 
                 if (!secureResult.first) {
@@ -543,16 +560,18 @@ class MainActivity : ComponentActivity() {
                 }
                 val secureResult = if (!pinForWrite.isNullOrEmpty()) {
                     withContext(Dispatchers.Main) {
-                        logUi("Attempting to unpair existing pairings...")
+                        logUi("Attempting to write NDEF via Keycard...")
                     }
-                    val result = writeNdefViaKeycard(tag, ndefBytes, pairingPassword, pinForWrite)
-                    // Log key steps based on result
-                    if (!result.first) {
+                    val result = keycardRepository.writeNdef(tag, ndefBytes, pairingPassword, pinForWrite)
+                    if (result.isSuccess) {
+                        Pair(true, null)
+                    } else {
+                        val error = result.exceptionOrNull()?.message ?: "Write failed"
                         withContext(Dispatchers.Main) {
-                            logUi("Pairing/unpairing step failed. Error: ${result.second}")
+                            logUi("Write failed. Error: $error")
                         }
+                        Pair(false, error)
                     }
-                    result
                 } else Pair(false, "No verified PIN available for secure write")
 
                 if (!secureResult.first) {
@@ -962,31 +981,7 @@ fun QrScannerDialog(
 }
 
 
-private fun verifyPinWithKeycard(tag: Tag, pin: String): Boolean {
-    // Establish IsoDep connection and channel using Keycard Android transport
-    val isoDep = IsoDep.get(tag) ?: run {
-        Log.d("PIN", "IsoDep not available for tag")
-        return false
-    }
-    return try {
-        Log.d("PIN", "Connecting IsoDep...")
-        isoDep.connect()
-        isoDep.timeout = 120000
-
-        // Create a Keycard channel (APDU transport). Next step would be to use CommandSet.
-        val channel = NFCCardChannel(isoDep)
-        Log.d("PIN", "IsoDep connected; channel ready")
-
-        // TODO: Replace with real CommandSet flow: select applet, pair/open secure channel, verify PIN
-        // For now, keep a simple placeholder check so the UI flow is testable.
-        pin == "123456"
-    } catch (e: Exception) {
-        Log.e("PIN", "Error during IsoDep/verify: ${e.message}")
-        false
-    } finally {
-        try { isoDep.close() } catch (_: Exception) {}
-    }
-}
+// verifyPinWithKeycard and writeNdefViaKeycard moved to KeycardRepositoryImpl
 
 private fun buildUriNdef(url: String): NdefMessage {
     val uriRecord = NdefRecord.createUri(url)
@@ -1046,404 +1041,4 @@ private fun toHex(bytes: ByteArray): String {
     return sb.toString()
 }
 
-// Attempt secure-channel write using the Keycard SDK via reflection, reusing the verified PIN
-private fun writeNdefViaKeycard(tag: Tag, ndefBytes: ByteArray, pairingPassword: String, verifiedPin: String): Pair<Boolean, String?> {
-    // Note: This function is called from a coroutine, so we can't directly call logUi() here
-    // Error messages will be logged by the caller via logUi()
-    Log.d("Keycard", "=== Starting writeNdefViaKeycard ===")
-    Log.d("Keycard", "NDEF bytes: ${ndefBytes.size}, pairing password length: ${pairingPassword.length}, PIN length: ${verifiedPin.length}")
-    val isoDep = IsoDep.get(tag) ?: return Pair(false, "IsoDep not available")
-    return try {
-        Log.d("Keycard", "Connecting to IsoDep...")
-        isoDep.connect()
-        isoDep.timeout = 120000
-        Log.d("Keycard", "IsoDep connected, timeout set to ${isoDep.timeout}ms")
-        val channel = NFCCardChannel(isoDep)
-        Log.d("Keycard", "NFCCardChannel created")
-
-        // Load CommandSet reflectively to avoid compile-time API coupling
-        Log.d("Keycard", "Loading CommandSet class...")
-        val cardChannelClass = Class.forName("im.status.keycard.io.CardChannel")
-        Log.d("Keycard", "CardChannel class found: ${cardChannelClass.name}")
-        val candidateCommands = listOf(
-            "im.status.keycard.applet.CommandSet",
-            "im.status.keycard.applet.KeycardCommandSet",
-            "im.status.keycard.applet.CardCommandSet"
-        )
-        Log.d("Keycard", "Searching for CommandSet in: ${candidateCommands.joinToString()}")
-        val commandSetClass = candidateCommands.firstOrNull { name ->
-            try { 
-                val found = Class.forName(name) != null
-                if (found) Log.d("Keycard", "Found CommandSet class: $name")
-                found
-            } catch (_: Throwable) { 
-                false 
-            }
-        }?.let { Class.forName(it) } ?: run {
-            Log.e("Keycard", "CommandSet not found in any candidate classes")
-            return Pair(false, "Keycard SDK not on classpath: none of ${candidateCommands.joinToString()} found")
-        }
-        Log.d("Keycard", "Using CommandSet class: ${commandSetClass.name}")
-        val cmd = commandSetClass.getConstructor(cardChannelClass).newInstance(channel)
-        Log.d("Keycard", "CommandSet instance created")
-        
-        // Debug: List all available methods to find unpair or pairing management methods
-        val allMethodNames = commandSetClass.methods.map { "${it.name}(${it.parameterTypes.joinToString { it.simpleName }})" }
-        Log.d("Keycard", "Available methods (${allMethodNames.size}): ${allMethodNames.take(20).joinToString(", ")}${if (allMethodNames.size > 20) "..." else ""}")
-        val unpairMethods = allMethodNames.filter { it.lowercase().contains("unpair") }
-        if (unpairMethods.isNotEmpty()) {
-            Log.d("Keycard", "Unpair-related methods found: ${unpairMethods.joinToString()}")
-        }
-
-        // cmd.select()
-        Log.d("Keycard", "Selecting Keycard applet...")
-        commandSetClass.getMethod("select").invoke(cmd)
-        Log.d("Keycard", "Keycard applet selected")
-
-        // Step 1: Try to unpair any existing pairings first (to avoid pairing conflicts)
-        // Note: Keycard has max 5 pairing slots. Error 0x6A84 means slots are full.
-        // We'll try to find unpair methods with various signatures
-        Log.d("Keycard", "Attempting to unpair existing pairings...")
-        var unpairMethod: java.lang.reflect.Method? = null
-        try {
-            // Try different unpair method signatures
-            unpairMethod = try { 
-                commandSetClass.getMethod("unpair").also { Log.d("Keycard", "Found unpair() method (no params)") }
-            } catch (_: NoSuchMethodException) {
-                try { 
-                    commandSetClass.getMethod("unpairAll").also { Log.d("Keycard", "Found unpairAll() method") }
-                } catch (_: NoSuchMethodException) {
-                    try {
-                        // Try unpair with int parameter (pairing index)
-                        commandSetClass.getMethod("unpair", Int::class.javaPrimitiveType).also { Log.d("Keycard", "Found unpair(int) method") }
-                    } catch (_: NoSuchMethodException) {
-                        try {
-                            // Try unpair with byte parameter
-                            commandSetClass.getMethod("unpair", Byte::class.javaPrimitiveType).also { Log.d("Keycard", "Found unpair(byte) method") }
-                        } catch (_: NoSuchMethodException) {
-                            try {
-                                // List all methods to see what's available
-                                val allMethods = commandSetClass.methods.filter { it.name.lowercase().contains("unpair") }
-                                if (allMethods.isNotEmpty()) {
-                                    Log.d("Keycard", "Found unpair-related methods: ${allMethods.joinToString { "${it.name}(${it.parameterTypes.joinToString()})" }}")
-                                    // Try the first one with no params
-                                    allMethods.firstOrNull { it.parameterTypes.isEmpty() }?.also { 
-                                        Log.d("Keycard", "Using unpair method: ${it.name}")
-                                        unpairMethod = it
-                                    }
-                                }
-                                if (unpairMethod == null) {
-                                    Log.d("Keycard", "No unpair/unpairAll method found via reflection")
-                                    null
-                                } else unpairMethod
-                            } catch (_: Exception) {
-                                Log.d("Keycard", "No unpair methods found")
-                                null
-                            }
-                        }
-                    }
-                }
-            }
-            if (unpairMethod != null) {
-                try {
-                    Log.d("Keycard", "Calling unpair method: ${unpairMethod.name}...")
-                    // Try calling with no params first
-                    if (unpairMethod.parameterTypes.isEmpty()) {
-                        unpairMethod.invoke(cmd)
-                        Log.d("Keycard", "Unpair successful (no params)")
-                    } else {
-                        // If it needs params, we can't call it without knowing the pairing index
-                        Log.d("Keycard", "Unpair method requires parameters, skipping (would need pairing index)")
-                    }
-                } catch (unpairEx: Exception) {
-                    val unpairCause = if (unpairEx is java.lang.reflect.InvocationTargetException) unpairEx.cause else unpairEx
-                    val unpairMsg = unpairCause?.message ?: unpairEx.message ?: "Unknown error"
-                    Log.d("Keycard", "Unpair failed (this is OK if card not paired or method needs params): $unpairMsg (${unpairCause?.javaClass?.simpleName ?: unpairEx.javaClass.simpleName})")
-                    // Ignore unpair errors - card might not be paired, or pairing might be in different slot
-                    // Continue with pairing attempt
-                }
-            } else {
-                Log.d("Keycard", "No unpair method available, skipping unpair step")
-            }
-        } catch (ex: Exception) {
-            Log.d("Keycard", "Exception while trying to unpair: ${ex.message} (${ex.javaClass.simpleName})")
-            // If unpair is not available or fails, continue with pairing attempt
-        }
-
-        // Step 2: Pair with the card (sets pairing info in CommandSet)
-        Log.d("Keycard", "Looking for autoPair method...")
-        val autoPair = try { 
-            commandSetClass.getMethod("autoPair", String::class.java).also { Log.d("Keycard", "Found autoPair(String) method") }
-        } catch (_: NoSuchMethodException) {
-            try { 
-                commandSetClass.getMethod("autoPair", ByteArray::class.java).also { Log.d("Keycard", "Found autoPair(ByteArray) method") }
-            } catch (_: NoSuchMethodException) { 
-                Log.e("Keycard", "autoPair method not found")
-                null 
-            }
-        } ?: return Pair(false, "Step 2 failed: autoPair method not found on CommandSet")
-        
-        Log.d("Keycard", "Attempting to pair with password length: ${pairingPassword.length}")
-        try {
-            if (autoPair.parameterTypes[0] == String::class.java) {
-                Log.d("Keycard", "Calling autoPair with String parameter...")
-                autoPair.invoke(cmd, pairingPassword)
-                Log.d("Keycard", "autoPair successful")
-            } else {
-                Log.d("Keycard", "Calling autoPair with ByteArray parameter...")
-                autoPair.invoke(cmd, pairingPassword.toByteArray())
-                Log.d("Keycard", "autoPair successful")
-            }
-        } catch (e: java.lang.reflect.InvocationTargetException) {
-            val cause = e.cause
-            val errorMsg = cause?.message ?: e.message ?: "Unknown error"
-            val errorClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
-            val errorCode = if (errorMsg.contains("0x")) {
-                errorMsg.substring(errorMsg.indexOf("0x")).takeWhile { it.isLetterOrDigit() || it == 'x' || it == 'X' || it == ' ' }
-            } else if (errorMsg.contains("SW=")) {
-                errorMsg.substring(errorMsg.indexOf("SW=")).takeWhile { it.isLetterOrDigit() || it == '=' || it == ' ' }
-            } else {
-                ""
-            }
-            Log.e("Keycard", "Step 2 (Pairing) failed: $errorMsg ($errorClass), error code: $errorCode")
-            
-            // If pairing fails with 0x6A84, try to unpair first and retry
-            if (errorMsg.contains("0x6A84") || errorMsg.contains("6A84") || errorMsg.contains("Pairing failed")) {
-                Log.d("Keycard", "Pairing failed with 0x6A84, attempting unpair and retry...")
-                try {
-                    // Try to unpair and retry pairing
-                    val retryUnpairMethod = try { 
-                        commandSetClass.getMethod("unpair").also { Log.d("Keycard", "Found unpair() for retry") }
-                    } catch (_: NoSuchMethodException) {
-                        try { 
-                            commandSetClass.getMethod("unpairAll").also { Log.d("Keycard", "Found unpairAll() for retry") }
-                        } catch (_: NoSuchMethodException) { 
-                            Log.d("Keycard", "No unpair method found for retry")
-                            null 
-                        }
-                    }
-                    if (retryUnpairMethod != null) {
-                        try {
-                            Log.d("Keycard", "Calling unpair before retry...")
-                            retryUnpairMethod.invoke(cmd)
-                            Log.d("Keycard", "Unpair successful, retrying pairing...")
-                            // Retry pairing after unpair
-                            if (autoPair.parameterTypes[0] == String::class.java) {
-                                autoPair.invoke(cmd, pairingPassword)
-                            } else {
-                                autoPair.invoke(cmd, pairingPassword.toByteArray())
-                            }
-                            Log.d("Keycard", "Pairing retry successful after unpair")
-                        } catch (retryEx: Exception) {
-                            val retryCause = if (retryEx is java.lang.reflect.InvocationTargetException) retryEx.cause else retryEx
-                            val retryMsg = retryCause?.message ?: retryEx.message ?: "Unknown error"
-                            val retryClass = retryCause?.javaClass?.simpleName ?: retryEx.javaClass.simpleName
-                            Log.e("Keycard", "Step 2 (Pairing retry) failed after unpair: $retryMsg ($retryClass)")
-                            return Pair(false, "Step 2 (Pairing) failed: $errorClass - $errorMsg (Error: $errorCode). Retry after unpair also failed: $retryMsg")
-                        }
-                    } else {
-                        // Try to find any unpair method by listing all methods
-                        val allUnpairMethods = commandSetClass.methods.filter { 
-                            it.name.lowercase().contains("unpair") 
-                        }
-                        if (allUnpairMethods.isNotEmpty()) {
-                            Log.d("Keycard", "Found unpair methods via reflection: ${allUnpairMethods.joinToString { "${it.name}(${it.parameterTypes.joinToString()})" }}")
-                            // Try calling the first one that takes no params
-                            val noParamUnpair = allUnpairMethods.firstOrNull { it.parameterTypes.isEmpty() }
-                            if (noParamUnpair != null) {
-                                try {
-                                    Log.d("Keycard", "Trying unpair method: ${noParamUnpair.name}...")
-                                    noParamUnpair.invoke(cmd)
-                                    Log.d("Keycard", "Unpair successful via reflection, retrying pairing...")
-                                    // Retry pairing after unpair
-                                    if (autoPair.parameterTypes[0] == String::class.java) {
-                                        autoPair.invoke(cmd, pairingPassword)
-                                    } else {
-                                        autoPair.invoke(cmd, pairingPassword.toByteArray())
-                                    }
-                                    Log.d("Keycard", "Pairing retry successful after unpair")
-                                } catch (retryEx: Exception) {
-                                    val retryCause = if (retryEx is java.lang.reflect.InvocationTargetException) retryEx.cause else retryEx
-                                    val retryMsg = retryCause?.message ?: retryEx.message ?: "Unknown error"
-                                    Log.e("Keycard", "Pairing retry failed after unpair: $retryMsg")
-                                    return Pair(false, "Step 2 (Pairing) failed: $errorClass - $errorMsg (Error: $errorCode). Unpair found but retry failed: $retryMsg")
-                                }
-                            } else {
-                                Log.e("Keycard", "Cannot retry pairing: unpair methods found but all require parameters")
-                                return Pair(false, "Step 2 (Pairing) failed: $errorClass - $errorMsg (Error: $errorCode). Card pairing slots are full (0x6A84). Unpair methods require parameters we don't have.")
-                            }
-                        } else {
-                            Log.e("Keycard", "Cannot retry pairing: no unpair method available")
-                            return Pair(false, "Step 2 (Pairing) failed: $errorClass - $errorMsg (Error: $errorCode). Card pairing slots are full (0x6A84). No unpair method available. Please unpair the card using another tool or app.")
-                        }
-                    }
-                } catch (retryException: Exception) {
-                    val retryCause = if (retryException is java.lang.reflect.InvocationTargetException) retryException.cause else retryException
-                    Log.e("Keycard", "Exception during pairing retry: ${retryCause?.message ?: retryException.message} (${retryCause?.javaClass?.simpleName ?: retryException.javaClass.simpleName})")
-                    return Pair(false, "Step 2 (Pairing) failed: $errorClass - $errorMsg (Error: $errorCode). Retry exception: ${retryCause?.message ?: retryException.message}")
-                }
-            } else {
-                Log.e("Keycard", "Pairing failed with non-0x6A84 error, not retrying")
-                return Pair(false, "Step 2 (Pairing) failed: $errorClass - $errorMsg" + if (errorCode.isNotEmpty()) " (Error: $errorCode)" else "")
-            }
-        }
-
-        // Step 3: Open secure channel (uses pairing info already set by autoPair)
-        Log.d("Keycard", "Opening secure channel...")
-        val autoOpenSC = try { 
-            commandSetClass.getMethod("autoOpenSecureChannel").also { Log.d("Keycard", "Found autoOpenSecureChannel() method") }
-        } catch (_: NoSuchMethodException) { 
-            Log.e("Keycard", "autoOpenSecureChannel() not found")
-            null 
-        } ?: return Pair(false, "autoOpenSecureChannel() not found on CommandSet")
-        try {
-            autoOpenSC.invoke(cmd)
-            Log.d("Keycard", "Secure channel opened successfully")
-        } catch (scEx: Exception) {
-            val scCause = if (scEx is java.lang.reflect.InvocationTargetException) scEx.cause else scEx
-            val scMsg = scCause?.message ?: scEx.message ?: "Unknown error"
-            val scClass = scCause?.javaClass?.simpleName ?: scEx.javaClass.simpleName
-            Log.e("Keycard", "Failed to open secure channel: $scMsg ($scClass)")
-            throw scCause ?: scEx
-        }
-
-        // Step 4: Verify PIN: try verifyPIN(String) then verifyPIN(byte[])
-        Log.d("Keycard", "Verifying PIN...")
-        val verifyMethod = try { 
-            commandSetClass.getMethod("verifyPIN", String::class.java).also { Log.d("Keycard", "Found verifyPIN(String) method") }
-        } catch (_: NoSuchMethodException) {
-            try { 
-                commandSetClass.getMethod("verifyPIN", ByteArray::class.java).also { Log.d("Keycard", "Found verifyPIN(ByteArray) method") }
-            } catch (_: NoSuchMethodException) {
-                try { 
-                    commandSetClass.getMethod("verifyPin", String::class.java).also { Log.d("Keycard", "Found verifyPin(String) method") }
-                } catch (_: NoSuchMethodException) {
-                    try { 
-                        commandSetClass.getMethod("verifyPin", ByteArray::class.java).also { Log.d("Keycard", "Found verifyPin(ByteArray) method") }
-                    } catch (_: NoSuchMethodException) { 
-                        Log.e("Keycard", "verifyPIN/verifyPin method not found")
-                        null 
-                    }
-                }
-            }
-        } ?: return Pair(false, "verifyPIN/verifyPin method not found on CommandSet")
-        val pinOk = try {
-            if (verifyMethod.parameterTypes[0] == String::class.java) {
-                Log.d("Keycard", "Calling verifyPIN with String parameter...")
-                (verifyMethod.invoke(cmd, verifiedPin) as? Boolean) ?: true
-            } else {
-                Log.d("Keycard", "Calling verifyPIN with ByteArray parameter...")
-                (verifyMethod.invoke(cmd, verifiedPin.toByteArray()) as? Boolean) ?: true
-            }
-        } catch (pinEx: Exception) {
-            val pinCause = if (pinEx is java.lang.reflect.InvocationTargetException) pinEx.cause else pinEx
-            val pinMsg = pinCause?.message ?: pinEx.message ?: "Unknown error"
-            val pinClass = pinCause?.javaClass?.simpleName ?: pinEx.javaClass.simpleName
-            Log.e("Keycard", "PIN verification exception: $pinMsg ($pinClass)")
-            return Pair(false, "PIN verification exception: $pinClass - $pinMsg")
-        }
-        if (!pinOk) {
-            Log.e("Keycard", "PIN verification failed: card returned false")
-            return Pair(false, "PIN verification failed on card")
-        }
-        Log.d("Keycard", "PIN verification successful")
-
-        // Step 5: Write NDEF - Prefer setNDEF if available
-        Log.d("Keycard", "Writing NDEF data (${ndefBytes.size} bytes)...")
-        val setNdefMethod = commandSetClass.methods.firstOrNull { m ->
-            m.name == "setNDEF" && m.parameterTypes.size == 1 && m.parameterTypes[0] == ByteArray::class.java
-        }
-        if (setNdefMethod != null) {
-            Log.d("Keycard", "Using setNDEF() method")
-            try {
-                setNdefMethod.invoke(cmd, ndefBytes)
-                Log.d("Keycard", "setNDEF() successful")
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                val cause = e.cause
-                val ndefMsg = cause?.message ?: e.message ?: "Unknown error"
-                val ndefClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
-                Log.e("Keycard", "setNDEF() failed: $ndefMsg ($ndefClass)")
-                throw cause ?: e
-            }
-        } else {
-            // Fallback to storeData(slot, bytes)
-            Log.d("Keycard", "setNDEF() not found, using storeData() method")
-            val slotNdef = 2 // StorageSlot.NDEF
-            val storeMethod = commandSetClass.methods.firstOrNull { m ->
-                m.name == "storeData" && m.parameterTypes.size == 2 &&
-                        ((m.parameterTypes[0] == Int::class.javaPrimitiveType || m.parameterTypes[0] == Byte::class.java) &&
-                         m.parameterTypes[1] == ByteArray::class.java)
-            } ?: return Pair(false, "storeData(int|byte, byte[]) not found on CommandSet")
-
-            try {
-                Log.d("Keycard", "Calling storeData() with slot $slotNdef...")
-                if (storeMethod.parameterTypes[0] == Int::class.javaPrimitiveType) {
-                    storeMethod.invoke(cmd, slotNdef, ndefBytes)
-                } else {
-                    storeMethod.invoke(cmd, slotNdef.toByte(), ndefBytes)
-                }
-                Log.d("Keycard", "storeData() successful")
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                val cause = e.cause
-                val ndefMsg = cause?.message ?: e.message ?: "Unknown error"
-                val ndefClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
-                Log.e("Keycard", "storeData() failed: $ndefMsg ($ndefClass)")
-                throw cause ?: e
-            }
-        }
-        Log.d("Keycard", "NDEF write completed successfully")
-        
-        // Always unpair after successful write
-        try {
-            Log.d("Keycard", "Unpairing card after write...")
-            val unpairMethods = commandSetClass.methods.filter { 
-                it.name.lowercase().contains("unpair") && it.parameterTypes.isEmpty()
-            }
-            if (unpairMethods.isNotEmpty()) {
-                val unpairMethod = unpairMethods.first()
-                try {
-                    unpairMethod.invoke(cmd)
-                    Log.d("Keycard", "Unpair successful after write")
-                } catch (unpairEx: Exception) {
-                    Log.d("Keycard", "Unpair failed (non-critical): ${unpairEx.message}")
-                }
-            } else {
-                Log.d("Keycard", "No unpair method available (non-critical)")
-            }
-        } catch (e: Exception) {
-            Log.d("Keycard", "Exception during unpair (non-critical): ${e.message}")
-        }
-
-        Pair(true, null)
-    } catch (cnf: ClassNotFoundException) {
-        Pair(false, "Keycard SDK not on classpath: ${cnf.message}")
-        } catch (e: java.lang.reflect.InvocationTargetException) {
-            // Unwrap InvocationTargetException to get the actual cause
-            val cause = e.cause
-            val errorMsg = cause?.message ?: e.message ?: "Unknown error"
-            val errorClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
-            val errorCode = if (errorMsg.contains("0x")) {
-                errorMsg.substring(errorMsg.indexOf("0x")).takeWhile { it.isLetterOrDigit() || it == 'x' || it == 'X' || it == ' ' }
-            } else if (errorMsg.contains("SW=")) {
-                errorMsg.substring(errorMsg.indexOf("SW="))
-            } else {
-                ""
-            }
-            Log.e("Keycard", "Secure write exception: $errorClass - $errorMsg (error code: $errorCode)")
-            val fullErrorMsg = "Secure write exception: $errorClass - $errorMsg" + if (errorCode.isNotEmpty()) " (Error: $errorCode)" else ""
-            Pair(false, fullErrorMsg)
-        } catch (e: Exception) {
-            val errorMsg = e.message ?: e.toString()
-            val errorClass = e.javaClass.simpleName
-            Log.e("Keycard", "Secure write exception: $errorClass - $errorMsg")
-            Pair(false, "Secure write exception: $errorClass - $errorMsg")
-        } finally {
-            try { 
-                Log.d("Keycard", "Closing IsoDep connection...")
-                isoDep.close() 
-                Log.d("Keycard", "IsoDep connection closed")
-            } catch (closeEx: Exception) {
-                Log.d("Keycard", "Error closing IsoDep: ${closeEx.message}")
-            }
-        }
-}
+// writeNdefViaKeycard moved to KeycardRepositoryImpl
