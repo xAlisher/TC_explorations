@@ -10,12 +10,16 @@ import android.nfc.tech.NdefFormatable
 import android.nfc.NdefMessage
 import android.nfc.NdefRecord
 import android.os.Bundle
+import android.content.Context
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -52,7 +56,11 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import com.example.keycardapp.ui.theme.KeycardappTheme
+import kotlinx.coroutines.delay
 
 // --- 1. NEW IMPORTS ---
 import kotlinx.coroutines.CoroutineScope
@@ -110,6 +118,28 @@ class MainActivity : ComponentActivity() {
             val currentUseCase by useCaseViewModel.currentUseCase.collectAsState()
             val writeUrlState by writeUrlViewModel.state.collectAsState()
             val writeVcState by writeVcViewModel.state.collectAsState()
+            
+            // Trigger haptic when connection is established
+            // Use a key to track previous status to avoid multiple triggers
+            var previousWriteUrlStatus by remember { mutableStateOf("") }
+            LaunchedEffect(writeUrlState.status) {
+                if (writeUrlState.status.contains("Connection established", ignoreCase = true) &&
+                    !previousWriteUrlStatus.contains("Connection established", ignoreCase = true)) {
+                    Log.d("MainActivity", "Connection established detected for Write URL, triggering haptic")
+                    triggerHaptic()
+                }
+                previousWriteUrlStatus = writeUrlState.status
+            }
+            
+            var previousWriteVcStatus by remember { mutableStateOf("") }
+            LaunchedEffect(writeVcState.status) {
+                if (writeVcState.status.contains("Connection established", ignoreCase = true) &&
+                    !previousWriteVcStatus.contains("Connection established", ignoreCase = true)) {
+                    Log.d("MainActivity", "Connection established detected for Write VC, triggering haptic")
+                    triggerHaptic()
+                }
+                previousWriteVcStatus = writeVcState.status
+            }
             
             // Handle use case navigation and initialization
             LaunchedEffect(currentUseCase) {
@@ -310,9 +340,44 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Trigger haptic feedback.
+     */
+    private fun triggerHaptic() {
+        try {
+            Log.d("MainActivity", "Triggering haptic feedback")
+            val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val vibratorManager = getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager
+                vibratorManager.defaultVibrator
+            } else {
+                @Suppress("DEPRECATION")
+                getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+            }
+            
+            if (!vibrator.hasVibrator()) {
+                Log.w("MainActivity", "Device does not have a vibrator")
+                return
+            }
+            
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                vibrator.vibrate(VibrationEffect.createOneShot(50, VibrationEffect.DEFAULT_AMPLITUDE))
+            } else {
+                @Suppress("DEPRECATION")
+                vibrator.vibrate(50)
+            }
+            Log.d("MainActivity", "Haptic feedback triggered successfully")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Failed to trigger haptic: ${e.message}", e)
+        }
+    }
+    
+    /**
      * Handle tag for Write URL use case.
      */
     private fun handleTagForWriteUrl(tag: Tag, viewModel: WriteUrlViewModel) {
+        // Trigger haptic when tag is discovered
+        Log.d("MainActivity", "Tag discovered for Write URL, triggering haptic")
+        triggerHaptic()
+        
         val state = viewModel.state.value
         
         // Check if we need to verify PIN
@@ -327,10 +392,12 @@ class MainActivity : ComponentActivity() {
 
         // Check if we need to write URL
         if (state.pendingUrl != null) {
-            viewModel.writeUrl(tag) {
-                // Disable reader mode after operation completes
-                            disableReaderMode()
-                        }
+            viewModel.writeUrl(tag) { shouldKeepEnabled ->
+                // Disable reader mode after operation completes, unless retry is needed
+                if (!shouldKeepEnabled) {
+                    disableReaderMode()
+                }
+            }
             // Don't disable reader mode immediately - wait for operation to complete
             return
         }
@@ -340,6 +407,9 @@ class MainActivity : ComponentActivity() {
      * Handle tag for Write VC use case.
      */
     private fun handleTagForWriteVc(tag: Tag, viewModel: WriteVcViewModel) {
+        // Trigger haptic when tag is discovered
+        triggerHaptic()
+        
         val state = viewModel.state.value
         
         // Check if we need to verify PIN
@@ -382,7 +452,7 @@ fun UseCaseListScreen(onUseCaseSelected: (UseCase) -> Unit) {
         
         UseCaseCard(
             title = "1. Write URL to NDEF",
-            description = "Ready - Write any URL to NDEF record on Keycard",
+            description = "Write any URL to NDEF record on Keycard",
             onClick = { onUseCaseSelected(UseCase.WRITE_URL_TO_NDEF) },
             isReady = true
         )
@@ -391,7 +461,7 @@ fun UseCaseListScreen(onUseCaseSelected: (UseCase) -> Unit) {
         
         UseCaseCard(
             title = "2. Write VC to NDEF",
-            description = "Ready - Write Verifiable Credential to NDEF",
+            description = "Write Verifiable Credential to NDEF",
             onClick = { onUseCaseSelected(UseCase.WRITE_VC_TO_NDEF) },
             isReady = true
         )
@@ -527,6 +597,15 @@ fun PinDialog(
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
+    val focusRequester = remember { FocusRequester() }
+    
+    // Auto-focus the PIN input when dialog appears
+    // Add a small delay to ensure the dialog is fully visible before requesting focus
+    LaunchedEffect(Unit) {
+        delay(100) // Small delay to ensure dialog is fully visible
+        focusRequester.requestFocus()
+    }
+    
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(text = "Enter PIN") },
@@ -538,7 +617,12 @@ fun PinDialog(
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                modifier = Modifier.padding(top = 8.dp)
+                modifier = Modifier
+                    .padding(top = 8.dp)
+                    .focusRequester(focusRequester),
+                keyboardActions = KeyboardActions(
+                    onDone = { onConfirm() }
+                )
             )
         },
         confirmButton = {

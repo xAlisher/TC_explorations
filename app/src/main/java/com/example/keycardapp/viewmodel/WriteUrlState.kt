@@ -13,6 +13,7 @@ data class WriteUrlState(
     val urlInput: String = "",
     val pendingPin: String? = null,
     val pendingUrl: String? = null,
-    val lastVerifiedPin: String? = null
+    val lastVerifiedPin: String? = null,
+    val writeRetryCount: Int = 0
 )
 
