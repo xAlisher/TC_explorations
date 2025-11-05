@@ -7,12 +7,15 @@ import com.example.keycardapp.domain.repository.KeycardRepository
 import im.status.keycard.android.NFCCardChannel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import javax.inject.Inject
+import javax.inject.Singleton
 
 /**
  * Implementation of KeycardRepository.
  * Handles all Keycard operations using the Keycard SDK.
  */
-class KeycardRepositoryImpl : KeycardRepository {
+@Singleton
+class KeycardRepositoryImpl @Inject constructor() : KeycardRepository {
     
     override suspend fun verifyPin(tag: Tag, pin: String): Result<Boolean> = withContext(Dispatchers.IO) {
         val isoDep = IsoDep.get(tag) ?: return@withContext Result.failure(

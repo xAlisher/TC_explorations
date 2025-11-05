@@ -5,20 +5,23 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.keycardapp.domain.usecase.VerifyPinUseCase
 import com.example.keycardapp.domain.usecase.WriteUrlUseCase
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import javax.inject.Inject
 
 /**
  * ViewModel for Write URL to NDEF use case.
  * Manages UI state and coordinates use cases.
  */
-class WriteUrlViewModel(
+@HiltViewModel
+class WriteUrlViewModel @Inject constructor(
     private val verifyPinUseCase: VerifyPinUseCase,
     private val writeUrlUseCase: WriteUrlUseCase,
-    private val pairingPassword: String
+    @javax.inject.Named("pairingPassword") private val pairingPassword: String
 ) : ViewModel() {
     
     private val _state = MutableStateFlow(WriteUrlState())

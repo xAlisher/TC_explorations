@@ -75,28 +75,20 @@ import com.example.keycardapp.data.nfc.NfcManager
 import com.example.keycardapp.domain.model.UseCase
 
 // ViewModels
-import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.lifecycle.ViewModelProvider
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.remember
 import com.example.keycardapp.viewmodel.UseCaseViewModel
 import com.example.keycardapp.viewmodel.WriteUrlViewModel
 import com.example.keycardapp.viewmodel.WriteVcViewModel
-import com.example.keycardapp.viewmodel.ViewModelFactory
+import dagger.hilt.android.AndroidEntryPoint
+import androidx.hilt.navigation.compose.hiltViewModel
 
+@AndroidEntryPoint
 class MainActivity : ComponentActivity() {
-
-    // --- 2. DEFINE YOUR CARD'S SECRETS ---
-    private val pairingPassword = "MyNewCardPassword"
-    private val pin = "123456"
 
     // NFC Manager - handles all NFC operations
     private lateinit var nfcManager: NfcManager
-    
-    // ViewModel Factory
-    private lateinit var viewModelFactory: ViewModelFactory
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -109,18 +101,32 @@ class MainActivity : ComponentActivity() {
         if (!nfcManager.initialize()) {
             Log.w("MainActivity", "NFC is not available on this device.")
         }
-        
-        // Initialize ViewModel Factory
-        viewModelFactory = ViewModelFactory(pairingPassword)
 
 		setContent {
-            val useCaseViewModel: UseCaseViewModel = viewModel(
-                factory = viewModelFactory
-            )
+            val useCaseViewModel: UseCaseViewModel = hiltViewModel()
+            val writeUrlViewModel: WriteUrlViewModel = hiltViewModel()
+            val writeVcViewModel: WriteVcViewModel = hiltViewModel()
             
             val currentUseCase by useCaseViewModel.currentUseCase.collectAsState()
-            val writeUrlState by useCaseViewModel.writeUrlViewModel.state.collectAsState()
-            val writeVcState by useCaseViewModel.writeVcViewModel.state.collectAsState()
+            val writeUrlState by writeUrlViewModel.state.collectAsState()
+            val writeVcState by writeVcViewModel.state.collectAsState()
+            
+            // Handle use case navigation and initialization
+            LaunchedEffect(currentUseCase) {
+                when (currentUseCase) {
+                    UseCase.WRITE_URL_TO_NDEF -> {
+                        writeUrlViewModel.reset()
+                        writeUrlViewModel.showPinDialog()
+                    }
+                    UseCase.WRITE_VC_TO_NDEF -> {
+                        writeVcViewModel.reset()
+                        writeVcViewModel.showPinDialog()
+                    }
+                    else -> {
+                        // Coming soon
+                    }
+                }
+            }
             
             KeycardappTheme {
                 Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -143,10 +149,11 @@ class MainActivity : ComponentActivity() {
                             logs = writeUrlState.logs,
                             writtenHex = writeUrlState.writtenHex,
                             onBack = {
+                                writeUrlViewModel.reset()
                                 useCaseViewModel.navigateBack()
                             },
                             onTagDiscovered = { tag ->
-                                handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
+                                handleTagForWriteUrl(tag, writeUrlViewModel)
                             }
                         )
                         UseCase.WRITE_VC_TO_NDEF -> WriteVcToNdefScreen(
@@ -156,13 +163,14 @@ class MainActivity : ComponentActivity() {
                             validatingVc = writeVcState.validatingVc,
                             validationError = writeVcState.validationError,
                             onBack = {
+                                writeVcViewModel.reset()
                                 useCaseViewModel.navigateBack()
                             },
                             onScanQr = {
-                                useCaseViewModel.writeVcViewModel.showQrScanner()
+                                writeVcViewModel.showQrScanner()
                             },
                             onTagDiscovered = { tag ->
-                                handleTagForWriteVc(tag, useCaseViewModel.writeVcViewModel)
+                                handleTagForWriteVc(tag, writeVcViewModel)
                             }
                         )
                         else -> {
@@ -183,15 +191,15 @@ class MainActivity : ComponentActivity() {
                     if (writeUrlState.showPinDialog && currentUseCase == UseCase.WRITE_URL_TO_NDEF) {
                         PinDialog(
                             pin = writeUrlState.pinInput,
-                            onPinChange = { useCaseViewModel.writeUrlViewModel.updatePinInput(it) },
+                            onPinChange = { writeUrlViewModel.updatePinInput(it) },
                             onConfirm = {
-                                useCaseViewModel.writeUrlViewModel.confirmPin()
+                                writeUrlViewModel.confirmPin()
                                 enableReaderMode("verify PIN") { tag ->
-                                    handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
+                                    handleTagForWriteUrl(tag, writeUrlViewModel)
                                 }
                             },
                             onDismiss = { 
-                                useCaseViewModel.writeUrlViewModel.dismissPinDialog()
+                                writeUrlViewModel.dismissPinDialog()
                                 if (currentUseCase == UseCase.WRITE_URL_TO_NDEF) {
                                     useCaseViewModel.navigateBack()
                                 }
@@ -203,14 +211,14 @@ class MainActivity : ComponentActivity() {
                     if (writeUrlState.showUrlDialog && currentUseCase == UseCase.WRITE_URL_TO_NDEF) {
                         UrlDialog(
                             url = writeUrlState.urlInput,
-                            onUrlChange = { useCaseViewModel.writeUrlViewModel.updateUrlInput(it) },
+                            onUrlChange = { writeUrlViewModel.updateUrlInput(it) },
                             onConfirm = {
-                                useCaseViewModel.writeUrlViewModel.confirmUrl()
+                                writeUrlViewModel.confirmUrl()
                                     enableReaderMode("write NDEF") { tag ->
-                                    handleTagForWriteUrl(tag, useCaseViewModel.writeUrlViewModel)
+                                    handleTagForWriteUrl(tag, writeUrlViewModel)
                                 }
                             },
-                            onDismiss = { useCaseViewModel.writeUrlViewModel.dismissUrlDialog() }
+                            onDismiss = { writeUrlViewModel.dismissUrlDialog() }
                         )
                     }
                     
@@ -218,15 +226,15 @@ class MainActivity : ComponentActivity() {
                     if (writeVcState.showPinDialog && currentUseCase == UseCase.WRITE_VC_TO_NDEF) {
                         PinDialog(
                             pin = writeVcState.pinInput,
-                            onPinChange = { useCaseViewModel.writeVcViewModel.updatePinInput(it) },
+                            onPinChange = { writeVcViewModel.updatePinInput(it) },
                             onConfirm = {
-                                useCaseViewModel.writeVcViewModel.confirmPin()
+                                writeVcViewModel.confirmPin()
                                 enableReaderMode("verify PIN") { tag ->
-                                    handleTagForWriteVc(tag, useCaseViewModel.writeVcViewModel)
+                                    handleTagForWriteVc(tag, writeVcViewModel)
                                 }
                             },
                             onDismiss = {
-                                useCaseViewModel.writeVcViewModel.dismissPinDialog()
+                                writeVcViewModel.dismissPinDialog()
                                 if (currentUseCase == UseCase.WRITE_VC_TO_NDEF) {
                                     useCaseViewModel.navigateBack()
                                 }
@@ -239,11 +247,11 @@ class MainActivity : ComponentActivity() {
                         QrScannerDialog(
                             activity = this@MainActivity,
                             jwtInput = writeVcState.jwtInput,
-                            onJwtInputChange = { useCaseViewModel.writeVcViewModel.updateJwtInput(it) },
+                            onJwtInputChange = { writeVcViewModel.updateJwtInput(it) },
                             onScanResult = { qrText ->
-                                useCaseViewModel.writeVcViewModel.handleQrScanned(qrText)
+                                writeVcViewModel.handleQrScanned(qrText)
                             },
-                            onDismiss = { useCaseViewModel.writeVcViewModel.dismissQrScanner() }
+                            onDismiss = { writeVcViewModel.dismissQrScanner() }
                         )
                     }
                     
@@ -253,7 +261,7 @@ class MainActivity : ComponentActivity() {
                             writeVcState.pendingVcJwt != null && 
                             !writeVcState.validatingVc) {
                             enableReaderMode("write VC NDEF") { tag ->
-                                handleTagForWriteVc(tag, useCaseViewModel.writeVcViewModel)
+                                handleTagForWriteVc(tag, writeVcViewModel)
                             }
                         }
                     }
