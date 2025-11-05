@@ -1,0 +1,108 @@
+═══════════════════════════════════════════════════════════════════
+  QUICK GUIDE: How to Check Logs with ADB Logcat
+═══════════════════════════════════════════════════════════════════
+
+📱 STEP 1: Connect Your Android Device
+─────────────────────────────────────────────────────────────────
+1. Enable USB Debugging on your device:
+   - Settings → About Phone → Tap "Build Number" 7 times
+   - Settings → Developer Options → Enable "USB Debugging"
+2. Connect device via USB cable
+3. Accept "Allow USB Debugging?" popup on device
+
+
+🔌 STEP 2: Verify Connection
+─────────────────────────────────────────────────────────────────
+Open PowerShell and run:
+    adb devices
+
+Should show:
+    List of devices attached
+    <device-id>    device
+
+
+📊 STEP 3: Check Logs (Your Use Case)
+─────────────────────────────────────────────────────────────────
+Run this command in PowerShell:
+    adb logcat -s NfcManager MainActivity
+
+This shows logs from:
+  • NfcManager class (NFC operations)
+  • MainActivity class (UI operations)
+
+
+🎯 RECOMMENDED COMMAND FOR TESTING
+─────────────────────────────────────────────────────────────────
+Clear old logs first, then watch:
+    adb logcat -c
+    adb logcat -v time -s NfcManager MainActivity Keycard PIN VC UI
+
+This shows:
+  ✅ NFC initialization
+  ✅ Reader mode operations
+  ✅ Tag discovery
+  ✅ PIN verification
+  ✅ NDEF write operations
+  ✅ All UI updates
+  ✅ With timestamps
+
+
+💡 USEFUL COMMANDS
+─────────────────────────────────────────────────────────────────
+# Clear all logs
+adb logcat -c
+
+# Filter by specific tags
+adb logcat -s NfcManager MainActivity
+
+# Show with timestamps
+adb logcat -v time -s NfcManager MainActivity
+
+# Save logs to file
+adb logcat -s NfcManager MainActivity > nfc_logs.txt
+
+# Search for specific text (PowerShell)
+adb logcat | Select-String -Pattern "NFC|Keycard|Tag"
+
+
+🔍 WHAT YOU'LL SEE
+─────────────────────────────────────────────────────────────────
+Example output:
+    D/NfcManager: NFC adapter initialized
+    D/MainActivity: New NFC Intent Received!
+    D/NfcManager: ReaderMode enabled: verify PIN
+    D/NfcManager: ReaderMode tag discovered (verify PIN)
+    D/PIN: Connecting IsoDep...
+    D/Keycard: NDEF write completed successfully
+
+
+❓ TROUBLESHOOTING
+─────────────────────────────────────────────────────────────────
+"adb: command not found"
+  → ADB is in Android Studio SDK:
+    C:\Users\<username>\AppData\Local\Android\Sdk\platform-tools\adb.exe
+  → Or add platform-tools to PATH
+
+"no devices/emulators found"
+  → Check USB connection
+  → Enable USB Debugging
+  → Accept authorization popup
+
+"No logs showing"
+  → Run app first
+  → Try: adb logcat (no filter) to see all logs
+  → Clear first: adb logcat -c
+
+
+📝 QUICK REFERENCE
+─────────────────────────────────────────────────────────────────
+adb devices                                    # List devices
+adb logcat -c                                  # Clear logs
+adb logcat -s NfcManager MainActivity         # Filter tags
+adb logcat -v time -s NfcManager MainActivity # With time
+
+
+═══════════════════════════════════════════════════════════════════
+See HOW_TO_CHECK_LOGS.md for detailed documentation
+═══════════════════════════════════════════════════════════════════
+

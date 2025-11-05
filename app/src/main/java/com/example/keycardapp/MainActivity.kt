@@ -1,10 +1,8 @@
 package com.example.keycardapp // Make sure this matches your package name!
 
 import android.Manifest
-import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.os.Build
 import android.nfc.tech.IsoDep
@@ -73,6 +71,9 @@ import im.status.keycard.globalplatform.Crypto
 import com.nimbusds.jwt.JWTParser
 import java.nio.charset.StandardCharsets
 
+// NFC Manager
+import com.example.keycardapp.data.nfc.NfcManager
+
 enum class UseCase {
     WRITE_URL_TO_NDEF,
     WRITE_VC_TO_NDEF,
@@ -87,8 +88,9 @@ class MainActivity : ComponentActivity() {
     private val pairingPassword = "MyNewCardPassword"
     private val pin = "123456"
 
-    private var nfcAdapter: NfcAdapter? = null
-    private lateinit var pendingIntent: PendingIntent
+    // NFC Manager - handles all NFC operations
+    private lateinit var nfcManager: NfcManager
+    
     private val currentUseCase = mutableStateOf<UseCase?>(null)
     private val nfcStatus = mutableStateOf("Waiting for Keycard tap...")
     private val showPinDialog = mutableStateOf(false)
@@ -103,7 +105,6 @@ class MainActivity : ComponentActivity() {
     private val writtenHex = mutableStateOf<String?>(null)
     private val uiLogs = mutableStateOf(listOf<String>())
     private var lastVerifiedPin: String? = null
-    private var readerModeEnabled: Boolean = false
     
     // VC writing state
     private val vcStatus = mutableStateOf("")
@@ -134,21 +135,11 @@ class MainActivity : ComponentActivity() {
         // Ensure BouncyCastle provider is present for secure channel crypto
         try { Crypto.addBouncyCastleProvider() } catch (_: Exception) {}
 
-        nfcAdapter = NfcAdapter.getDefaultAdapter(this)
-        if (nfcAdapter == null) {
+        // Initialize NFC Manager
+        nfcManager = NfcManager(this)
+        if (!nfcManager.initialize()) {
             nfcStatus.value = "NFC is not available on this device."
         }
-
-        val intent = Intent(this, javaClass).apply {
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-        }
-
-        val pendingIntentFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        } else {
-            PendingIntent.FLAG_UPDATE_CURRENT
-        }
-        pendingIntent = PendingIntent.getActivity(this, 0, intent, pendingIntentFlags)
 
 		setContent {
             KeycardappTheme {
@@ -229,7 +220,9 @@ class MainActivity : ComponentActivity() {
 								pendingPin = pinInput.value
 								pinInput.value = ""
 								nfcStatus.value = "Now tap your Keycard to verify PIN"
-                                enableReaderMode("verify PIN")
+                                enableReaderMode("verify PIN") { tag ->
+                                    handleTag(tag)
+                                }
                             },
                             onDismiss = { 
                                 showPinDialog.value = false
@@ -254,7 +247,9 @@ class MainActivity : ComponentActivity() {
                                     writtenHex.value = null
                                     nfcStatus.value = "Searching for the card..."
                                     logUi("Waiting for card to write URL: $url")
-                                    enableReaderMode("write NDEF")
+                                    enableReaderMode("write NDEF") { tag ->
+                                        handleTag(tag)
+                                    }
                                 }
                             },
                             onDismiss = { showUrlDialog.value = false }
@@ -331,7 +326,9 @@ class MainActivity : ComponentActivity() {
                     vcWriteRetryCount = 0  // Reset retry count for new write attempt
                     vcStatus.value = "✅ Credential validated. Tap your Keycard to write..."
                     logVc("VC validated successfully. Size: ${vcBytes.size} bytes")
-                    enableReaderMode("write VC NDEF")
+                    enableReaderMode("write VC NDEF") { tag ->
+                        handleTag(tag)
+                    }
                 }
             } catch (e: Exception) {
                 Log.e("MainActivity", "VC validation failed:", e)
@@ -352,13 +349,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        nfcAdapter?.enableForegroundDispatch(this, pendingIntent, null, null)
+        nfcManager.enableForegroundDispatch()
         logUi("Foreground dispatch enabled")
     }
 
     override fun onPause() {
         super.onPause()
-        nfcAdapter?.disableForegroundDispatch(this)
+        nfcManager.disableForegroundDispatch()
     }
 
 		override fun onNewIntent(intent: Intent) {
@@ -366,35 +363,22 @@ class MainActivity : ComponentActivity() {
         Log.d("MainActivity", "New NFC Intent Received!")
         logUi("NFC intent received")
 
-        val tag: Tag? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
+        val tag = nfcManager.handleIntent(intent)
+        if (tag != null) {
+            handleTag(tag)
         } else {
-            @Suppress("DEPRECATION")
-            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
-        }
-
-        if (tag == null) {
             logUi("No tag in intent")
-            return
         }
-
-        handleTag(tag)
     }
 
-    private fun enableReaderMode(reason: String) {
-        val adapter = nfcAdapter ?: return
-        if (readerModeEnabled) {
-            disableReaderMode()
-        }
-        val flags = NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
-        adapter.enableReaderMode(this, { tag ->
+    private fun enableReaderMode(reason: String, onTagDiscovered: (Tag) -> Unit) {
+        nfcManager.enableReaderMode(reason) { tag ->
             when (currentUseCase.value) {
                 UseCase.WRITE_VC_TO_NDEF -> logVc("ReaderMode tag discovered ($reason)")
                 else -> logUi("ReaderMode tag discovered ($reason)")
             }
-            handleTag(tag)
-        }, flags, null)
-        readerModeEnabled = true
+            onTagDiscovered(tag)
+        }
         when (currentUseCase.value) {
             UseCase.WRITE_VC_TO_NDEF -> logVc("ReaderMode enabled: $reason")
             else -> logUi("ReaderMode enabled: $reason")
@@ -402,14 +386,11 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun disableReaderMode() {
-        val adapter = nfcAdapter ?: return
-        if (!readerModeEnabled) return
-        adapter.disableReaderMode(this)
-        readerModeEnabled = false
         when (currentUseCase.value) {
             UseCase.WRITE_VC_TO_NDEF -> logVc("ReaderMode disabled")
             else -> logUi("ReaderMode disabled")
         }
+        nfcManager.disableReaderMode()
     }
 
     private fun handleTag(tag: Tag) {
