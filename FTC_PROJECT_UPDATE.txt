@@ -1,0 +1,29 @@
+🎉 Project Update: Keycard NDEF Writer Android App
+
+We've successfully built an Android app that enables secure NFC communication with Status Keycard hardware wallets!
+
+✅ What We Accomplished:
+• Complete secure channel implementation using Keycard SDK v3.1.2
+• PIN verification workflow
+• NDEF writing to Keycard (profile URLs readable by NFC readers)
+• Modern Android UI with Jetpack Compose
+
+📱 User Flow:
+1. Enter Keycard PIN → Verify via NFC
+2. Enter Funding The Commons profile ID
+3. Tap card → Write profile URL to Keycard
+4. Profile accessible via any NFC reader
+
+🔐 Security:
+- Full pairing and encrypted secure channel
+- Hardware wallet protection
+- Secure PIN authentication
+
+📂 Open Source: https://github.com/xAlisher/TC_explorations
+
+🚀 Next Steps:
+- Signing data with Keycard private keys
+- Verifiable Credentials support
+
+This enables users to carry their FtC profile on their Keycard, accessible via NFC while maintaining hardware wallet security.
+

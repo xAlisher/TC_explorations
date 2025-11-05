@@ -41,6 +41,45 @@ The app is organized as a list of use cases, each demonstrating a different capa
 
 ## Use Cases
 
+### 0. ✅ Initialize Keycard (Ready)
+
+Initialize a new Keycard with PIN, PUK, and pairing password. This is the first step for a new Keycard.
+
+**User Flow:**
+1. Select "Initialize Keycard" from the main screen
+2. **Card Detection**: Tap Keycard to detect it
+   - App searches for the card via ReaderMode
+   - If card not found: Shows "Card not found"
+   - If card found: Shows "Card detected"
+3. **Check Initialization Status**: 
+   - App checks if card is already initialized using `CommandSet.getApplicationInfo()`
+   - If card is already initialized: Shows "Card is already initialized"
+   - If card is not initialized: Shows "Card is not initialized. Ready to initialize."
+4. **PIN Entry**: 
+   - If card is not initialized, shows "Create PIN" dialog
+   - User enters 6-digit PIN (only digits allowed, exactly 6 digits)
+   - "Continue" button validates input (only enabled when 6 digits entered)
+5. **Repeat PIN**:
+   - Shows "Repeat PIN" dialog with "Write PIN" button
+   - User enters the same PIN again
+   - If PINs match: Proceeds to initialization
+   - If PINs don't match: Shows error "PINs do not match" and returns to Create PIN dialog
+6. **Card Initialization**:
+   - Tap card again to initialize
+   - App calls `CommandSet.init(pin, puk, pairingPassword)` where:
+     - PIN: User-entered 6-digit PIN
+     - PUK: Default "123456789012"
+     - Pairing Password: "MyNewCardPassword" (from app configuration)
+   - On success: Shows "Card initialized successfully!" with credentials displayed
+   - On failure: Shows error message
+
+**Technical Details:**
+- Uses `CommandSet.getApplicationInfo()` to check initialization status
+- Uses `CommandSet.init(String, String, String)` to initialize the card
+- Validates PIN input (6 digits only)
+- Validates PIN matching before proceeding
+- All operations use NFC ReaderMode for card communication
+
 ### 1. ✅ Write URL to NDEF (Ready)
 
 Write any URL to an NDEF record on the Keycard, making it readable by standard NFC readers.
@@ -85,6 +124,16 @@ Read and verify signed data from NDEF records on the Keycard.
 
 ### ✅ Technical Implementation Highlights
 
+#### Pairing and Unpairing
+All use cases follow a consistent pattern:
+- **Pair at start**: Always pair with the card using `CommandSet.autoPair(pairingPassword)` before performing operations
+- **Unpair at end**: Always unpair after successful operations using `CommandSet.unpair()` to free up pairing slots
+
+This ensures:
+- Clean pairing state management
+- Prevents pairing slot exhaustion (Keycard has max 5 pairing slots)
+- Matches the Python reference implementation pattern
+
 #### Secure Channel Flow
 Following the [Keycard SDK Secure Channel documentation](https://keycard.tech/developers/sdk/securechannel):
 
@@ -103,6 +152,9 @@ cmd.verifyPIN(pin)
 
 // 5. Write NDEF (adds 2-byte length prefix automatically)
 cmd.setNDEF(ndefBytes)
+
+// 6. Unpair after operation (cleanup)
+cmd.unpair()
 ```
 
 #### NFC Communication
@@ -232,8 +284,9 @@ keycardapp/
 
 ## Project Status
 
+✅ **Use Case 0 Complete**: Initialize Keycard  
 ✅ **Use Case 1 Complete**: Write URL to NDEF  
-📋 **Use Case 2 Planned**: Write VC to NDEF  
+✅ **Use Case 2 Complete**: Write VC to NDEF  
 📋 **Use Case 3 Planned**: Read VC from NDEF  
 📋 **Use Case 4 Planned**: Sign data and write to NDEF  
 📋 **Use Case 5 Planned**: Read signed data from NDEF
