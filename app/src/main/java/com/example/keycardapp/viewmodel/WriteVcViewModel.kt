@@ -146,6 +146,22 @@ class WriteVcViewModel @Inject constructor(
      * Handle QR scan result (JWT-VC).
      */
     fun handleQrScanned(jwtVc: String) {
+        // Trim the JWT-VC input to ensure no whitespace issues
+        val trimmedJwtVc = jwtVc.trim()
+        
+        if (trimmedJwtVc.isEmpty()) {
+            _state.update {
+                it.copy(
+                    showQrScanner = false,
+                    jwtInput = "",
+                    validationError = "JWT-VC cannot be empty",
+                    status = "❌ Invalid input"
+                )
+            }
+            addLog("JWT-VC input is empty")
+            return
+        }
+        
         _state.update {
             it.copy(
                 showQrScanner = false,
@@ -155,21 +171,25 @@ class WriteVcViewModel @Inject constructor(
                 status = "Validating credential..."
             )
         }
-        addLog("QR code scanned, validating JWT-VC...")
+        addLog("QR code scanned, processing input...")
         
         viewModelScope.launch {
             try {
                 // Note: Validation is done in WriteVcUseCase, but we can pre-validate here
-                // For now, just store it and validate when writing
+                // Store the trimmed JWT-VC and validate when writing
+                // Calculate approximate NDEF size for logging
+                val vcBytes = trimmedJwtVc.toByteArray(java.nio.charset.StandardCharsets.UTF_8)
+                val approxNdefSize = vcBytes.size + 25 // Approximate NDEF overhead
+                
                 _state.update {
                     it.copy(
                         validatingVc = false,
-                        pendingVcJwt = jwtVc,
+                        pendingVcJwt = trimmedJwtVc,
                         writeRetryCount = 0,
                         status = "✅ Credential ready. Tap your Keycard to write..."
                     )
                 }
-                addLog("VC ready for writing")
+                addLog("VC ready for writing (${trimmedJwtVc.length} chars, ~${vcBytes.size} bytes raw, ~${approxNdefSize} bytes NDEF)")
             } catch (e: Exception) {
                 addLog("VC validation exception: ${e.message}")
                 _state.update {
@@ -196,7 +216,9 @@ class WriteVcViewModel @Inject constructor(
      *                   Parameter indicates whether reader mode should remain enabled (for retries)
      */
     fun writeVc(tag: Tag, onComplete: (Boolean) -> Unit = { _ -> }) {
-        val jwtVc = _state.value.pendingVcJwt ?: return
+        val jwtVcRaw = _state.value.pendingVcJwt ?: return
+        // Trim the JWT-VC input to ensure no whitespace issues
+        val jwtVc = jwtVcRaw.trim()
         val pin = _state.value.lastVerifiedPin ?: run {
             updateStatus("❌ No verified PIN available for secure write")
             addLog("No verified PIN available")
@@ -218,10 +240,11 @@ class WriteVcViewModel @Inject constructor(
             
             if (!writeResult.success) {
                 if (writeResult.isTagLost && retryCount < MAX_RETRIES) {
-                    // Tag was lost, retry - keep reader mode enabled
-                    _state.update { it.copy(writeRetryCount = retryCount + 1) }
-                    updateStatus("⚠️ Tag lost. Retrying... (Attempt ${retryCount + 2}/$MAX_RETRIES)")
-                    addLog("Tag lost. Retrying (${retryCount + 1}/$MAX_RETRIES)...")
+                    // Tag was lost, increment retry count and retry - keep reader mode enabled
+                    val newRetryCount = retryCount + 1
+                    _state.update { it.copy(writeRetryCount = newRetryCount) }
+                    updateStatus("⚠️ Tag lost. Retrying... (Attempt ${newRetryCount + 1}/$MAX_RETRIES)")
+                    addLog("Tag lost. Retrying (${newRetryCount}/$MAX_RETRIES)...")
                     // Keep pendingVcJwt so it can be retried
                     // Reader mode should remain enabled for next tap
                     onComplete(true) // Keep reader mode enabled

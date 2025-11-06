@@ -42,8 +42,11 @@ class WriteVcUseCase(
         pin: String,
         retryCount: Int = 0
     ): WriteVcResult {
+        // Ensure JWT-VC is trimmed (defensive check)
+        val trimmedJwtVc = jwtVc.trim()
+        
         // First validate the VC
-        val validationResult = validateVcUseCase(jwtVc)
+        val validationResult = validateVcUseCase(trimmedJwtVc)
         if (!validationResult.isValid) {
             return WriteVcResult(
                 success = false,
@@ -58,6 +61,19 @@ class WriteVcUseCase(
             )
         
         val ndefBytes = ndefMessage.toByteArray()
+        
+        // Log NDEF size for debugging
+        android.util.Log.d("WriteVcUseCase", "NDEF message size: ${ndefBytes.size} bytes (JWT-VC: ${trimmedJwtVc.length} chars)")
+        
+        // Validate NDEF size against 500-byte limit (with chunking support)
+        if (ndefBytes.size > 500) {
+            val sizeKB = String.format("%.1f", ndefBytes.size / 1024.0)
+            android.util.Log.e("WriteVcUseCase", "NDEF message size (${ndefBytes.size} bytes, ${sizeKB}KB) exceeds 500-byte limit with chunking support")
+            return WriteVcResult(
+                success = false,
+                errorMessage = "Credential Too Large: NDEF message (${ndefBytes.size} bytes, ${sizeKB}KB) exceeds the 500-byte limit. Please use a smaller credential."
+            )
+        }
         
         // Write NDEF via Keycard
         val writeResult = keycardRepository.writeNdef(tag, ndefBytes, pairingPassword, pin)
@@ -97,14 +113,17 @@ class WriteVcUseCase(
     }
     
     /**
-     * Check if error is due to tag loss (can be retried).
+     * Check if error is due to tag loss or secure channel loss (can be retried).
      */
     private fun isTagLostError(error: String): Boolean {
         return error.contains("TagLostException", ignoreCase = true) ||
                error.contains("Tag was lost", ignoreCase = true) ||
                error.contains("TagLost", ignoreCase = true) ||
                error.contains("IOException", ignoreCase = true) ||
-               error.contains("connection", ignoreCase = true)
+               error.contains("connection", ignoreCase = true) ||
+               error.contains("secure channel", ignoreCase = true) ||
+               error.contains("AssertionError", ignoreCase = true) ||
+               error.contains("session may have been lost", ignoreCase = true)
     }
     
     /**

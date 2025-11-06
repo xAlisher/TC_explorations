@@ -15,7 +15,7 @@ object ViewModelModule {
     @ViewModelScoped
     @Named("pairingPassword")
     fun providePairingPassword(): String {
-        return "MyNewCardPassword"
+        return "111111111111"
     }
 }
 

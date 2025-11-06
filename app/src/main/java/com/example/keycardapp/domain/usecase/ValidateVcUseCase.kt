@@ -21,18 +21,23 @@ data class ValidateVcResult(
 class ValidateVcUseCase {
     
     companion object {
-        private const val MAX_PAYLOAD_SIZE = 1000 // 1KB limit for Keycard
+        // Updated SDK supports chunking up to 500 bytes
+        private const val MAX_PAYLOAD_SIZE = 1000 // 1KB limit for Keycard (theoretical)
+        private const val MAX_NDEF_SIZE = 500 // Max NDEF size with chunking support
         private const val MIME_TYPE = "application/vc+jwt"
     }
     
     /**
      * Validate Verifiable Credential (JWT-VC).
+     * Note: JWT validation is temporarily disabled for APDU size limit testing.
      * 
-     * @param jwtVc The JWT-VC string to validate
+     * @param jwtVc The JWT-VC string to validate (or any string for testing)
      * @return ValidateVcResult containing validation status, error message, and NDEF message
      */
     suspend operator fun invoke(jwtVc: String): ValidateVcResult {
-        // Validate JWT format
+        // TEMPORARY: Skip JWT validation for size limit testing
+        // TODO: Re-enable JWT validation after finding APDU size limit
+        /*
         val jwt = try {
             JWTParser.parse(jwtVc)
         } catch (e: Exception) {
@@ -41,6 +46,7 @@ class ValidateVcUseCase {
                 errorMessage = "Invalid Credential Format: Not a valid JWT"
             )
         }
+        */
         
         // Check size (max 1000 bytes for safety)
         val vcBytes = jwtVc.toByteArray(StandardCharsets.UTF_8)
@@ -57,6 +63,16 @@ class ValidateVcUseCase {
         // Create NDEF record with MIME type application/vc+jwt
         val ndefRecord = NdefRecord.createMime(MIME_TYPE, vcBytes)
         val ndefMessage = NdefMessage(arrayOf(ndefRecord))
+        val ndefBytes = ndefMessage.toByteArray()
+        
+        // Check if NDEF size exceeds max with chunking support
+        if (ndefBytes.size > MAX_NDEF_SIZE) {
+            val sizeKB = String.format("%.1f", ndefBytes.size / 1024.0)
+            android.util.Log.w("ValidateVcUseCase", "Warning: NDEF message size (${ndefBytes.size} bytes, ${sizeKB}KB) exceeds maximum supported size (${MAX_NDEF_SIZE} bytes) even with chunking. Write will fail.")
+            // Note: We don't fail validation here, but WriteVcUseCase will check and fail with a clear error message
+        } else {
+            android.util.Log.d("ValidateVcUseCase", "NDEF message size: ${ndefBytes.size} bytes (within ${MAX_NDEF_SIZE} bytes limit with chunking support)")
+        }
         
         return ValidateVcResult(
             isValid = true,

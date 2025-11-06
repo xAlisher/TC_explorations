@@ -107,12 +107,22 @@ class KeycardRepositoryImpl @Inject constructor() : KeycardRepository {
             val cmd = commandSetClass.getConstructor(cardChannelClass).newInstance(channel)
             Log.d("KeycardRepository", "CommandSet instance created")
             
-            // Debug: List all available methods to find unpair or pairing management methods
+            // Debug: List all available methods to find unpair, pairing management, or data storage methods
             val allMethodNames = commandSetClass.methods.map { "${it.name}(${it.parameterTypes.joinToString { it.simpleName }})" }
             Log.d("KeycardRepository", "Available methods (${allMethodNames.size}): ${allMethodNames.take(20).joinToString(", ")}${if (allMethodNames.size > 20) "..." else ""}")
             val unpairMethods = allMethodNames.filter { it.lowercase().contains("unpair") }
             if (unpairMethods.isNotEmpty()) {
                 Log.d("KeycardRepository", "Unpair-related methods found: ${unpairMethods.joinToString()}")
+            }
+            // Find all methods that might store data
+            val storeMethods = allMethodNames.filter { 
+                it.lowercase().contains("store") || 
+                it.lowercase().contains("write") || 
+                it.lowercase().contains("data") ||
+                it.lowercase().contains("ndef")
+            }
+            if (storeMethods.isNotEmpty()) {
+                Log.d("KeycardRepository", "Data storage methods found: ${storeMethods.joinToString()}")
             }
             
             // Select applet
@@ -262,8 +272,23 @@ class KeycardRepositoryImpl @Inject constructor() : KeycardRepository {
             val errorCode = extractErrorCode(errorMsg)
             Log.e("KeycardRepository", "Step 2 (Pairing) failed: $errorMsg ($errorClass), error code: $errorCode")
             
+            // Handle "Invalid card cryptogram" - may indicate wrong pairing password or card needs unpairing
+            if (errorMsg.contains("Invalid card cryptogram", ignoreCase = true) || 
+                errorMsg.contains("cryptogram", ignoreCase = true)) {
+                Log.e("KeycardRepository", "Pairing failed with 'Invalid card cryptogram'. This may indicate:")
+                Log.e("KeycardRepository", "  1. Wrong pairing password")
+                Log.e("KeycardRepository", "  2. Card needs to be unpaired first")
+                Log.e("KeycardRepository", "  3. Card applet may need to be updated")
+                // Try to unpair and retry
+                try {
+                    Log.d("KeycardRepository", "Attempting to unpair and retry due to cryptogram error...")
+                    retryPairingAfterUnpair(commandSetClass, cmd, autoPair, pairingPassword, errorClass, errorMsg, errorCode)
+                } catch (retryEx: Exception) {
+                    throw Exception("Step 2 (Pairing) failed: $errorClass - $errorMsg. This may indicate wrong pairing password or card needs unpairing. Please verify the pairing password and try unpairing the card first.")
+                }
+            }
             // If pairing fails with 0x6A84, try to unpair first and retry
-            if (errorMsg.contains("0x6A84", ignoreCase = true) || errorMsg.contains("6A84") || errorMsg.contains("Pairing failed", ignoreCase = true)) {
+            else if (errorMsg.contains("0x6A84", ignoreCase = true) || errorMsg.contains("6A84") || errorMsg.contains("Pairing failed", ignoreCase = true)) {
                 Log.d("KeycardRepository", "Pairing failed with 0x6A84, attempting unpair and retry...")
                 retryPairingAfterUnpair(commandSetClass, cmd, autoPair, pairingPassword, errorClass, errorMsg, errorCode)
             } else {
@@ -430,52 +455,48 @@ class KeycardRepositoryImpl @Inject constructor() : KeycardRepository {
     }
     
     /**
-     * Write NDEF - Prefer setNDEF if available, otherwise use storeData.
+     * Write NDEF - Uses setNDEF which now supports automatic chunking for payloads up to 500 bytes.
+     * The updated SDK automatically splits large data into chunks.
      */
     private fun writeNdefToCard(commandSetClass: Class<*>, cmd: Any, ndefBytes: ByteArray) {
-        Log.d("KeycardRepository", "Writing NDEF data (${ndefBytes.size} bytes)...")
+        Log.d("KeycardRepository", "Writing NDEF data (${ndefBytes.size} bytes) - SDK will automatically chunk if needed...")
+        
+        // Log info about chunking support
+        if (ndefBytes.size > 256) {
+            Log.d("KeycardRepository", "NDEF payload (${ndefBytes.size} bytes) will be automatically chunked by SDK (supports up to 500 bytes)")
+        }
         val setNdefMethod = commandSetClass.methods.firstOrNull { m ->
             m.name == "setNDEF" && m.parameterTypes.size == 1 && m.parameterTypes[0] == ByteArray::class.java
         }
         
-        if (setNdefMethod != null) {
-            Log.d("KeycardRepository", "Using setNDEF() method")
-            try {
-                setNdefMethod.invoke(cmd, ndefBytes)
-                Log.d("KeycardRepository", "setNDEF() successful")
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                val cause = e.cause
-                val ndefMsg = cause?.message ?: e.message ?: "Unknown error"
-                val ndefClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
-                Log.e("KeycardRepository", "setNDEF() failed: $ndefMsg ($ndefClass)")
-                throw cause ?: e
-            }
-        } else {
-            // Fallback to storeData(slot, bytes)
-            Log.d("KeycardRepository", "setNDEF() not found, using storeData() method")
-            val slotNdef = 2 // StorageSlot.NDEF
-            val storeMethod = commandSetClass.methods.firstOrNull { m ->
-                m.name == "storeData" && m.parameterTypes.size == 2 &&
-                        ((m.parameterTypes[0] == Int::class.javaPrimitiveType || m.parameterTypes[0] == Byte::class.java) &&
-                         m.parameterTypes[1] == ByteArray::class.java)
-            } ?: throw IllegalStateException("storeData(int|byte, byte[]) not found on CommandSet")
-            
-            try {
-                Log.d("KeycardRepository", "Calling storeData() with slot $slotNdef...")
-                if (storeMethod.parameterTypes[0] == Int::class.javaPrimitiveType) {
-                    storeMethod.invoke(cmd, slotNdef, ndefBytes)
-                } else {
-                    storeMethod.invoke(cmd, slotNdef.toByte(), ndefBytes)
-                }
-                Log.d("KeycardRepository", "storeData() successful")
-            } catch (e: java.lang.reflect.InvocationTargetException) {
-                val cause = e.cause
-                val ndefMsg = cause?.message ?: e.message ?: "Unknown error"
-                val ndefClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
-                Log.e("KeycardRepository", "storeData() failed: $ndefMsg ($ndefClass)")
-                throw cause ?: e
-            }
+        if (setNdefMethod == null) {
+            throw IllegalStateException("setNDEF() method not found on CommandSet. This should not happen with the updated SDK.")
         }
+        
+        // setNDEF now supports automatic chunking for payloads up to 500 bytes
+        Log.d("KeycardRepository", "Calling setNDEF() method (payload size: ${ndefBytes.size} bytes) - SDK will automatically chunk if needed...")
+        try {
+            setNdefMethod.invoke(cmd, ndefBytes)
+            Log.d("KeycardRepository", "setNDEF() successful (chunking handled automatically by SDK)")
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            val cause = e.cause
+            val ndefMsg = cause?.message ?: e.message ?: "Unknown error"
+            val ndefClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
+            
+            // Handle AssertionError - may indicate payload exceeds 500 bytes or other issue
+            if (cause is AssertionError) {
+                Log.e("KeycardRepository", "setNDEF() failed with AssertionError (payload ${ndefBytes.size} bytes): $ndefMsg. This may indicate payload exceeds 500 bytes limit or secure channel issue.")
+                throw IllegalStateException("setNDEF() failed: Payload (${ndefBytes.size} bytes) may exceed 500 bytes limit or secure channel issue. Error: $ndefMsg")
+            }
+            
+            Log.e("KeycardRepository", "setNDEF() failed: $ndefMsg ($ndefClass)")
+            throw cause ?: e
+        } catch (e: AssertionError) {
+            // Handle AssertionError directly (not wrapped in InvocationTargetException)
+            Log.e("KeycardRepository", "setNDEF() failed with AssertionError (payload ${ndefBytes.size} bytes): ${e.message}. This may indicate payload exceeds 500 bytes limit or secure channel issue.")
+            throw IllegalStateException("setNDEF() failed: Payload (${ndefBytes.size} bytes) may exceed 500 bytes limit or secure channel issue. Error: ${e.message}", e)
+        }
+        
         Log.d("KeycardRepository", "NDEF write completed successfully")
     }
     

@@ -286,13 +286,27 @@ class MainActivity : ComponentActivity() {
                     }
                     
                     // Enable reader mode when VC is ready for writing
-                    LaunchedEffect(writeVcState.pendingVcJwt, writeVcState.validatingVc) {
+                    LaunchedEffect(currentUseCase, writeVcState.pendingVcJwt, writeVcState.validatingVc, writeVcState.showQrScanner) {
                         if (currentUseCase == UseCase.WRITE_VC_TO_NDEF && 
                             writeVcState.pendingVcJwt != null && 
-                            !writeVcState.validatingVc) {
-                            enableReaderMode("write VC NDEF") { tag ->
-                                handleTagForWriteVc(tag, writeVcViewModel)
+                            !writeVcState.validatingVc &&
+                            !writeVcState.showQrScanner) {
+                            try {
+                                enableReaderMode("write VC NDEF") { tag ->
+                                    try {
+                                        handleTagForWriteVc(tag, writeVcViewModel)
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Error handling tag for Write VC: ${e.message}", e)
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                Log.e("MainActivity", "Error enabling reader mode for Write VC: ${e.message}", e)
                             }
+                        } else if (currentUseCase != UseCase.WRITE_VC_TO_NDEF || 
+                                   writeVcState.pendingVcJwt == null ||
+                                   writeVcState.showQrScanner) {
+                            // Disable reader mode if conditions are no longer met
+                            disableReaderMode()
                         }
                     }
                     
@@ -407,31 +421,51 @@ class MainActivity : ComponentActivity() {
      * Handle tag for Write VC use case.
      */
     private fun handleTagForWriteVc(tag: Tag, viewModel: WriteVcViewModel) {
-        // Trigger haptic when tag is discovered
-        triggerHaptic()
-        
-        val state = viewModel.state.value
-        
-        // Check if we need to verify PIN
-        if (state.pendingPin != null) {
-            viewModel.verifyPin(tag) {
-                // Disable reader mode after operation completes
-                disableReaderMode()
-            }
-            // Don't disable reader mode immediately - wait for operation to complete
-            return
-        }
-        
-        // Check if we need to write VC
-        if (state.pendingVcJwt != null) {
-            viewModel.writeVc(tag) { shouldKeepEnabled ->
-                // Disable reader mode after operation completes, unless retry is needed
-                if (!shouldKeepEnabled) {
-                    disableReaderMode()
+        try {
+            // Trigger haptic when tag is discovered
+            triggerHaptic()
+            
+            val state = viewModel.state.value
+            
+            // Check if we need to verify PIN
+            if (state.pendingPin != null) {
+                viewModel.verifyPin(tag) {
+                    // Disable reader mode after operation completes
+                    try {
+                        disableReaderMode()
+                    } catch (e: Exception) {
+                        Log.e("MainActivity", "Error disabling reader mode after PIN verification: ${e.message}", e)
+                    }
                 }
+                // Don't disable reader mode immediately - wait for operation to complete
+                return
             }
-            // Don't disable reader mode immediately - wait for operation to complete
-            return
+            
+            // Check if we need to write VC
+            if (state.pendingVcJwt != null) {
+                viewModel.writeVc(tag) { shouldKeepEnabled ->
+                    // Disable reader mode after operation completes, unless retry is needed
+                    if (!shouldKeepEnabled) {
+                        try {
+                            disableReaderMode()
+                        } catch (e: Exception) {
+                            Log.e("MainActivity", "Error disabling reader mode after VC write: ${e.message}", e)
+                        }
+                    }
+                }
+                // Don't disable reader mode immediately - wait for operation to complete
+                return
+            }
+            
+            Log.d("MainActivity", "Tag discovered but no pending operation (pendingPin=${state.pendingPin}, pendingVcJwt=${state.pendingVcJwt})")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error in handleTagForWriteVc: ${e.message}", e)
+            // Try to disable reader mode on error
+            try {
+                disableReaderMode()
+            } catch (disableEx: Exception) {
+                Log.e("MainActivity", "Error disabling reader mode after error: ${disableEx.message}", disableEx)
+            }
         }
     }
 }

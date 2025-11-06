@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This Android application demonstrates various Proof of Concept (POC) use cases for the Status Keycard beyond just hardware wallet functionality. The app provides a collection of NFC-based use cases that leverage the Keycard's secure storage and cryptographic capabilities for NDEF (NFC Data Exchange Format) operations.
+This Android application demonstrates various Proof of Concept (POC) use cases for the Keycard beyond just hardware wallet functionality. The app provides a collection of NFC-based use cases that leverage the Keycard's secure storage and cryptographic capabilities for NDEF (NFC Data Exchange Format) operations.
 
 The app is organized as a list of use cases, each demonstrating a different capability of the Keycard:
 
