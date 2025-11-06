@@ -1,8 +1,10 @@
 package com.example.keycardapp.di
 
 import com.example.keycardapp.domain.repository.KeycardRepository
+import com.example.keycardapp.domain.usecase.ReadVcFromNdefUseCase
 import com.example.keycardapp.domain.usecase.ValidateVcUseCase
 import com.example.keycardapp.domain.usecase.VerifyPinUseCase
+import com.example.keycardapp.domain.usecase.VerifyVcProofUseCase
 import com.example.keycardapp.domain.usecase.WriteUrlUseCase
 import com.example.keycardapp.domain.usecase.WriteVcUseCase
 import dagger.Module
@@ -44,6 +46,18 @@ object UseCaseModule {
         validateVcUseCase: ValidateVcUseCase
     ): WriteVcUseCase {
         return WriteVcUseCase(keycardRepository, validateVcUseCase)
+    }
+    
+    @Provides
+    @Singleton
+    fun provideReadVcFromNdefUseCase(): ReadVcFromNdefUseCase {
+        return ReadVcFromNdefUseCase()
+    }
+    
+    @Provides
+    @Singleton
+    fun provideVerifyVcProofUseCase(): VerifyVcProofUseCase {
+        return VerifyVcProofUseCase()
     }
 }
 

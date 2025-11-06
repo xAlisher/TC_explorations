@@ -68,8 +68,9 @@ class NfcManager(private val activity: Activity) {
      * 
      * @param reason Reason string for logging
      * @param onTagDiscovered Callback when a tag is discovered
+     * @param skipNdefCheck If true, skip NDEF check (for writing). If false, include NDEF check (for reading).
      */
-    fun enableReaderMode(reason: String, onTagDiscovered: (Tag) -> Unit) {
+    fun enableReaderMode(reason: String, onTagDiscovered: (Tag) -> Unit, skipNdefCheck: Boolean = true) {
         val adapter = nfcAdapter ?: run {
             Log.w("NfcManager", "Cannot enable reader mode: NFC adapter not available")
             return
@@ -81,14 +82,18 @@ class NfcManager(private val activity: Activity) {
         
         onTagDiscoveredCallback = onTagDiscovered
         
-        val flags = NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
+        val flags = if (skipNdefCheck) {
+            NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK
+        } else {
+            NfcAdapter.FLAG_READER_NFC_A
+        }
         adapter.enableReaderMode(activity, { tag ->
-            Log.d("NfcManager", "ReaderMode tag discovered ($reason)")
+            Log.d("NfcManager", "ReaderMode tag discovered ($reason, skipNdefCheck=$skipNdefCheck)")
             onTagDiscovered(tag)
         }, flags, null)
         
         readerModeEnabled = true
-        Log.d("NfcManager", "ReaderMode enabled: $reason")
+        Log.d("NfcManager", "ReaderMode enabled: $reason (skipNdefCheck=$skipNdefCheck)")
     }
     
     /**

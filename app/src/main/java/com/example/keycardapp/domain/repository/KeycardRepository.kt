@@ -40,5 +40,27 @@ interface KeycardRepository {
         pairingPassword: String,
         pin: String
     ): Result<Unit>
+    
+    /**
+     * Read NDEF data from Keycard via secure channel.
+     * 
+     * This operation:
+     * 1. Selects the Keycard applet
+     * 2. Pairs with the card (unpairing existing pairings if needed)
+     * 3. Opens a secure channel
+     * 4. Verifies PIN
+     * 5. Reads NDEF data
+     * 6. Unpairs after successful read
+     * 
+     * @param tag The NFC tag representing the Keycard
+     * @param pairingPassword The pairing password for the card
+     * @param pin The PIN to verify before reading
+     * @return Result containing the NDEF bytes or error message
+     */
+    suspend fun readNdef(
+        tag: Tag,
+        pairingPassword: String,
+        pin: String
+    ): Result<ByteArray>
 }
 

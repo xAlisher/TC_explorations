@@ -89,6 +89,7 @@ import androidx.compose.runtime.LaunchedEffect
 import com.example.keycardapp.viewmodel.UseCaseViewModel
 import com.example.keycardapp.viewmodel.WriteUrlViewModel
 import com.example.keycardapp.viewmodel.WriteVcViewModel
+import com.example.keycardapp.viewmodel.ReadVcViewModel
 import dagger.hilt.android.AndroidEntryPoint
 import androidx.hilt.navigation.compose.hiltViewModel
 
@@ -114,10 +115,12 @@ class MainActivity : ComponentActivity() {
             val useCaseViewModel: UseCaseViewModel = hiltViewModel()
             val writeUrlViewModel: WriteUrlViewModel = hiltViewModel()
             val writeVcViewModel: WriteVcViewModel = hiltViewModel()
+            val readVcViewModel: ReadVcViewModel = hiltViewModel()
             
             val currentUseCase by useCaseViewModel.currentUseCase.collectAsState()
             val writeUrlState by writeUrlViewModel.state.collectAsState()
             val writeVcState by writeVcViewModel.state.collectAsState()
+            val readVcState by readVcViewModel.state.collectAsState()
             
             // Trigger haptic when connection is established
             // Use a key to track previous status to avoid multiple triggers
@@ -152,6 +155,10 @@ class MainActivity : ComponentActivity() {
                         writeVcViewModel.reset()
                         writeVcViewModel.showPinDialog()
                     }
+                    UseCase.READ_VC_FROM_NDEF -> {
+                        readVcViewModel.reset()
+                        // No PIN required for reading NDEF
+                    }
                     else -> {
                         // Coming soon
                     }
@@ -165,7 +172,6 @@ class MainActivity : ComponentActivity() {
                             onUseCaseSelected = { selectedUseCase ->
                                 useCaseViewModel.navigateToUseCase(selectedUseCase)
                                 when (selectedUseCase) {
-                                    UseCase.READ_VC_FROM_NDEF,
                                     UseCase.SIGN_DATA_AND_WRITE_TO_NDEF,
                                     UseCase.READ_SIGNED_DATA_FROM_NDEF -> {
                                         // Coming soon
@@ -203,6 +209,25 @@ class MainActivity : ComponentActivity() {
                                 handleTagForWriteVc(tag, writeVcViewModel)
                             }
                         )
+                        UseCase.READ_VC_FROM_NDEF -> ReadVcFromNdefScreen(
+                            vcStatus = readVcState.status,
+                            logs = readVcState.logs,
+                            readingVc = readVcState.readingVc,
+                            verifyingProof = readVcState.verifyingProof,
+                            jwtVc = readVcState.jwtVc,
+                            decodedPayload = readVcState.decodedPayload,
+                            issuer = readVcState.issuer,
+                            subject = readVcState.subject,
+                            vcClaims = readVcState.vcClaims,
+                            verificationError = readVcState.verificationError,
+                            onBack = {
+                                readVcViewModel.reset()
+                                useCaseViewModel.navigateBack()
+                            },
+                            onTagDiscovered = { tag ->
+                                handleTagForReadVc(tag, readVcViewModel)
+                            }
+                        )
                         else -> {
                             Column(modifier = Modifier
                                 .fillMaxSize()
@@ -224,9 +249,9 @@ class MainActivity : ComponentActivity() {
                             onPinChange = { writeUrlViewModel.updatePinInput(it) },
                             onConfirm = {
                                 writeUrlViewModel.confirmPin()
-                                enableReaderMode("verify PIN") { tag ->
+                                enableReaderMode("verify PIN", { tag ->
                                     handleTagForWriteUrl(tag, writeUrlViewModel)
-                                }
+                                })
                             },
                             onDismiss = { 
                                 writeUrlViewModel.dismissPinDialog()
@@ -244,9 +269,9 @@ class MainActivity : ComponentActivity() {
                             onUrlChange = { writeUrlViewModel.updateUrlInput(it) },
                             onConfirm = {
                                 writeUrlViewModel.confirmUrl()
-                                    enableReaderMode("write NDEF") { tag ->
+                                enableReaderMode("write NDEF", { tag ->
                                     handleTagForWriteUrl(tag, writeUrlViewModel)
-                                }
+                                })
                             },
                             onDismiss = { writeUrlViewModel.dismissUrlDialog() }
                         )
@@ -259,9 +284,9 @@ class MainActivity : ComponentActivity() {
                             onPinChange = { writeVcViewModel.updatePinInput(it) },
                             onConfirm = {
                                 writeVcViewModel.confirmPin()
-                                enableReaderMode("verify PIN") { tag ->
+                                enableReaderMode("verify PIN", { tag ->
                                     handleTagForWriteVc(tag, writeVcViewModel)
-                                }
+                                })
                             },
                             onDismiss = {
                                 writeVcViewModel.dismissPinDialog()
@@ -271,6 +296,7 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }
+                    
                     
                     // QR Scanner Dialog for Write VC
                     if (writeVcState.showQrScanner && currentUseCase == UseCase.WRITE_VC_TO_NDEF) {
@@ -292,13 +318,13 @@ class MainActivity : ComponentActivity() {
                             !writeVcState.validatingVc &&
                             !writeVcState.showQrScanner) {
                             try {
-                                enableReaderMode("write VC NDEF") { tag ->
+                                enableReaderMode("write VC NDEF", { tag ->
                                     try {
                                         handleTagForWriteVc(tag, writeVcViewModel)
                                     } catch (e: Exception) {
                                         Log.e("MainActivity", "Error handling tag for Write VC: ${e.message}", e)
                                     }
-                                }
+                                })
                             } catch (e: Exception) {
                                 Log.e("MainActivity", "Error enabling reader mode for Write VC: ${e.message}", e)
                             }
@@ -306,6 +332,27 @@ class MainActivity : ComponentActivity() {
                                    writeVcState.pendingVcJwt == null ||
                                    writeVcState.showQrScanner) {
                             // Disable reader mode if conditions are no longer met
+                            disableReaderMode()
+                        }
+                    }
+                    
+                    // Enable reader mode for Read VC (no PIN required, don't skip NDEF check)
+                    LaunchedEffect(currentUseCase, readVcState.readingVc) {
+                        if (currentUseCase == UseCase.READ_VC_FROM_NDEF && 
+                            !readVcState.readingVc) {
+                            try {
+                                nfcManager.enableReaderMode("read VC NDEF", { tag ->
+                                    try {
+                                        handleTagForReadVc(tag, readVcViewModel)
+                                    } catch (e: Exception) {
+                                        Log.e("MainActivity", "Error handling tag for Read VC: ${e.message}", e)
+                                    }
+                                }, skipNdefCheck = false) // Don't skip NDEF check for reading
+                            } catch (e: Exception) {
+                                Log.e("MainActivity", "Error enabling reader mode for Read VC: ${e.message}", e)
+                            }
+                        } else if (currentUseCase != UseCase.READ_VC_FROM_NDEF) {
+                            // Disable reader mode if not in Read VC use case
                             disableReaderMode()
                         }
                     }
@@ -340,12 +387,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun enableReaderMode(reason: String, onTagDiscovered: (Tag) -> Unit) {
-        nfcManager.enableReaderMode(reason) { tag ->
+    private fun enableReaderMode(reason: String, onTagDiscovered: (Tag) -> Unit, skipNdefCheck: Boolean = true) {
+        nfcManager.enableReaderMode(reason, { tag ->
             Log.d("MainActivity", "ReaderMode tag discovered ($reason)")
             onTagDiscovered(tag)
-        }
-        Log.d("MainActivity", "ReaderMode enabled: $reason")
+        }, skipNdefCheck)
+        Log.d("MainActivity", "ReaderMode enabled: $reason (skipNdefCheck=$skipNdefCheck)")
     }
 
     private fun disableReaderMode() {
@@ -420,6 +467,26 @@ class MainActivity : ComponentActivity() {
     /**
      * Handle tag for Write VC use case.
      */
+    private fun handleTagForReadVc(tag: Tag, viewModel: ReadVcViewModel) {
+        try {
+            // Trigger haptic when tag is discovered
+            triggerHaptic()
+            
+            // Read VC directly (no PIN required for NDEF reading)
+            viewModel.readVc(tag) {
+                // Disable reader mode after operation completes
+                try {
+                    disableReaderMode()
+                } catch (e: Exception) {
+                    Log.e("MainActivity", "Error disabling reader mode after VC read: ${e.message}", e)
+                }
+            }
+            // Don't disable reader mode immediately - wait for operation to complete
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error handling tag for Read VC: ${e.message}", e)
+        }
+    }
+    
     private fun handleTagForWriteVc(tag: Tag, viewModel: WriteVcViewModel) {
         try {
             // Trigger haptic when tag is discovered
@@ -506,7 +573,7 @@ fun UseCaseListScreen(onUseCaseSelected: (UseCase) -> Unit) {
             title = "3. Read VC from NDEF",
             description = "Read and verify Verifiable Credential from NDEF",
             onClick = { onUseCaseSelected(UseCase.READ_VC_FROM_NDEF) },
-            isReady = false
+            isReady = true
         )
         
         Spacer(modifier = Modifier.height(12.dp))
@@ -777,6 +844,202 @@ fun WriteVcToNdefScreen(
         Spacer(modifier = Modifier.height(16.dp))
         
         LogsList(logs = logs, writtenHex = writtenHex)
+    }
+}
+
+@Composable
+fun ReadVcFromNdefScreen(
+    vcStatus: String,
+    logs: List<String>,
+    readingVc: Boolean,
+    verifyingProof: Boolean,
+    jwtVc: String?,
+    decodedPayload: String?,
+    issuer: String?,
+    subject: String?,
+    vcClaims: String?,
+    verificationError: String?,
+    onBack: () -> Unit,
+    onTagDiscovered: (Tag) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Button(onClick = onBack) {
+            Text("← Back to Use Cases")
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        StatusText(status = vcStatus)
+        
+        if (readingVc) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Reading VC from Keycard...")
+                }
+            }
+        }
+        
+        if (verifyingProof) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator()
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("Verifying cryptographic proof...")
+                }
+            }
+        }
+        
+        if (verificationError != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFFFEBEE)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "Error",
+                        fontSize = 18.sp,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFFC62828)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = verificationError,
+                        fontSize = 14.sp,
+                        color = Color(0xFF424242)
+                    )
+                }
+            }
+        }
+        
+        if (decodedPayload != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFE8F5E9)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "Decoded VC",
+                        fontSize = 18.sp,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFF2E7D32)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    if (issuer != null) {
+                        Text(
+                            text = "Issuer: $issuer",
+                            fontSize = 14.sp,
+                            color = Color(0xFF424242)
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                    }
+                    if (subject != null) {
+                        Text(
+                            text = "Subject: $subject",
+                            fontSize = 14.sp,
+                            color = Color(0xFF424242)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                    }
+                    Text(
+                        text = "Payload:",
+                        fontSize = 14.sp,
+                        style = MaterialTheme.typography.titleSmall,
+                        color = Color(0xFF424242)
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = decodedPayload,
+                        fontSize = 12.sp,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        color = Color(0xFF424242)
+                    )
+                }
+            }
+        }
+        
+        if (vcClaims != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFE3F2FD)
+                )
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "VC Claims",
+                        fontSize = 18.sp,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color(0xFF1565C0)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = vcClaims,
+                        fontSize = 12.sp,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        color = Color(0xFF424242)
+                    )
+                }
+            }
+        }
+        
+        if (jwtVc != null) {
+            Spacer(modifier = Modifier.height(16.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp)
+                ) {
+                    Text(
+                        text = "JWT-VC (Raw)",
+                        fontSize = 18.sp,
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(
+                        text = jwtVc,
+                        fontSize = 10.sp,
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
+                    )
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        LogsList(logs = logs, writtenHex = null)
     }
 }
 

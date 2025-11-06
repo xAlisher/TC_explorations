@@ -525,6 +525,157 @@ class KeycardRepositoryImpl @Inject constructor() : KeycardRepository {
         }
     }
     
+    override suspend fun readNdef(
+        tag: Tag,
+        pairingPassword: String,
+        pin: String
+    ): Result<ByteArray> = withContext(Dispatchers.IO) {
+        val isoDep = IsoDep.get(tag) ?: return@withContext Result.failure(
+            IllegalStateException("IsoDep not available")
+        )
+        
+        return@withContext try {
+            Log.d("KeycardRepository", "=== Starting readNdef ===")
+            Log.d("KeycardRepository", "Pairing password length: ${pairingPassword.length}, PIN length: ${pin.length}")
+            
+            Log.d("KeycardRepository", "Connecting to IsoDep...")
+            isoDep.connect()
+            isoDep.timeout = 120000
+            Log.d("KeycardRepository", "IsoDep connected, timeout set to ${isoDep.timeout}ms")
+            
+            val channel = NFCCardChannel(isoDep)
+            Log.d("KeycardRepository", "NFCCardChannel created")
+            
+            // Load CommandSet reflectively
+            Log.d("KeycardRepository", "Loading CommandSet class...")
+            val cardChannelClass = Class.forName("im.status.keycard.io.CardChannel")
+            Log.d("KeycardRepository", "CardChannel class found: ${cardChannelClass.name}")
+            
+            val candidateCommands = listOf(
+                "im.status.keycard.applet.CommandSet",
+                "im.status.keycard.applet.KeycardCommandSet",
+                "im.status.keycard.applet.CardCommandSet"
+            )
+            
+            val commandSetClass = candidateCommands.firstOrNull { name ->
+                try {
+                    Class.forName(name) != null
+                } catch (_: Throwable) {
+                    false
+                }
+            }?.let { Class.forName(it) } ?: run {
+                Log.e("KeycardRepository", "CommandSet not found")
+                return@withContext Result.failure(
+                    IllegalStateException("Keycard SDK not on classpath")
+                )
+            }
+            
+            Log.d("KeycardRepository", "Using CommandSet class: ${commandSetClass.name}")
+            val cmd = commandSetClass.getConstructor(cardChannelClass).newInstance(channel)
+            Log.d("KeycardRepository", "CommandSet instance created")
+            
+            // Select applet
+            Log.d("KeycardRepository", "Selecting Keycard applet...")
+            commandSetClass.getMethod("select").invoke(cmd)
+            Log.d("KeycardRepository", "Keycard applet selected")
+            
+            // Step 1: Try to unpair any existing pairings first
+            tryUnpairExistingPairings(commandSetClass, cmd)
+            
+            // Step 2: Pair with the card
+            pairWithCard(commandSetClass, cmd, pairingPassword)
+            
+            // Step 3: Open secure channel
+            openSecureChannel(commandSetClass, cmd)
+            
+            // Step 4: Verify PIN
+            verifyPinOnCard(commandSetClass, cmd, pin)
+            
+            // Step 5: Read NDEF
+            val ndefBytes = readNdefFromCard(commandSetClass, cmd)
+            
+            // Step 6: Unpair after successful read
+            tryUnpairAfterWrite(commandSetClass, cmd)
+            
+            Log.d("KeycardRepository", "NDEF read completed successfully (${ndefBytes.size} bytes)")
+            Result.success(ndefBytes)
+            
+        } catch (cnf: ClassNotFoundException) {
+            Log.e("KeycardRepository", "ClassNotFoundException: ${cnf.message}", cnf)
+            Result.failure(IllegalStateException("Keycard SDK not on classpath: ${cnf.message}"))
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            val cause = e.cause
+            val errorMsg = cause?.message ?: e.message ?: "Unknown error"
+            val errorClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
+            val errorCode = extractErrorCode(errorMsg)
+            Log.e("KeycardRepository", "Secure read exception: $errorClass - $errorMsg (error code: $errorCode)", e)
+            Result.failure(Exception("Secure read exception: $errorClass - $errorMsg" + if (errorCode.isNotEmpty()) " (Error: $errorCode)" else ""))
+        } catch (e: Exception) {
+            val errorMsg = e.message ?: e.toString()
+            val errorClass = e.javaClass.simpleName
+            Log.e("KeycardRepository", "Exception: $errorClass - $errorMsg", e)
+            Result.failure(Exception("Secure read exception: $errorClass - $errorMsg"))
+        } finally {
+            try {
+                Log.d("KeycardRepository", "Closing IsoDep connection...")
+                isoDep.close()
+                Log.d("KeycardRepository", "IsoDep connection closed")
+            } catch (closeEx: Exception) {
+                Log.d("KeycardRepository", "Error closing IsoDep: ${closeEx.message}")
+            }
+        }
+    }
+    
+    /**
+     * Read NDEF from card - Uses getNDEF which supports automatic chunking.
+     */
+    private fun readNdefFromCard(commandSetClass: Class<*>, cmd: Any): ByteArray {
+        Log.d("KeycardRepository", "Reading NDEF data from card...")
+        
+        val getNdefMethod = commandSetClass.methods.firstOrNull { m ->
+            (m.name == "getNDEF" || m.name == "getNdef") && 
+            m.parameterTypes.isEmpty() &&
+            m.returnType == ByteArray::class.java
+        }
+        
+        if (getNdefMethod == null) {
+            // Try alternative: methods that return data
+            val alternativeMethods = commandSetClass.methods.filter { m ->
+                m.name.lowercase().contains("ndef") && 
+                m.name.lowercase().contains("get") &&
+                m.parameterTypes.isEmpty()
+            }
+            if (alternativeMethods.isNotEmpty()) {
+                Log.d("KeycardRepository", "Found alternative NDEF read methods: ${alternativeMethods.joinToString { it.name }}")
+                val method = alternativeMethods.first()
+                val result = method.invoke(cmd)
+                return when (result) {
+                    is ByteArray -> result
+                    is String -> result.toByteArray()
+                    else -> throw IllegalStateException("getNDEF returned unexpected type: ${result?.javaClass?.name}")
+                }
+            }
+            throw IllegalStateException("getNDEF() or getNdef() method not found on CommandSet")
+        }
+        
+        Log.d("KeycardRepository", "Calling getNDEF() method...")
+        try {
+            val result = getNdefMethod.invoke(cmd)
+            if (result is ByteArray) {
+                Log.d("KeycardRepository", "getNDEF() successful (${result.size} bytes)")
+                return result
+            } else {
+                throw IllegalStateException("getNDEF returned unexpected type: ${result?.javaClass?.name}")
+            }
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            val cause = e.cause
+            val ndefMsg = cause?.message ?: e.message ?: "Unknown error"
+            val ndefClass = cause?.javaClass?.simpleName ?: e.javaClass.simpleName
+            Log.e("KeycardRepository", "getNDEF() failed: $ndefMsg ($ndefClass)")
+            throw cause ?: e
+        }
+    }
+    
     /**
      * Extract error code from error message (0x... or SW=...).
      */
